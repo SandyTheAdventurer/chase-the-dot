@@ -85,6 +85,7 @@ class ChaseTheDotEnv(gym.Env):
                         current_time = time.time()
                         dt = current_time - self._last_time if self._last_time else 0.0
                         self._last_time = current_time
+                        
                         self._latest = np.array([gx, gy, bx, by, float(ex), float(ey), dt], dtype=np.float32)
                         del buf[:20]
                         self._new_data.set()
@@ -111,8 +112,8 @@ class ChaseTheDotEnv(gym.Env):
     def _metrics(self, s: np.ndarray) -> Tuple[np.ndarray, float, dict]:
         dist = float((s[2]**2 + s[3]**2)**0.5)
         in_bounds = not (bool(s[4]) or bool(s[5]))
-        reward = 1.0 - min(0.5, dist / 100.) if in_bounds else -0.2 - min(2.0, dist / 50.)
-        obs = np.array([s[0]/1000., s[1]/1000., s[2]/1000., s[3]/1000., s[4], s[5], s[6]], dtype=np.float32)
+        reward = 1.0 - (dist / 100.) if in_bounds else -0.2 - (dist / 50.)
+        obs = normalize(s)
         info = {"distance": dist, "in_bounds": in_bounds, "error_x": bool(s[4]), "error_y": bool(s[5]), "dt": float(s[6]), "state": s}
         return obs, reward, info
 

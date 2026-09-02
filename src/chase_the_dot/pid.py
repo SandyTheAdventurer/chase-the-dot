@@ -1,15 +1,15 @@
 import numpy as np
 
 class PID:
-    def __init__(self):
+    def __init__(self, kp=None, ki=None, kd=None):
         # Base PID parameters
-        self.kpx = 0.95
-        self.kix = 0.01
-        self.kdx = 0.05
+        self.kpx = kp if kp else 0.95
+        self.kix = ki if ki else 0.01
+        self.kdx = kd if kd else 0.05
 
-        self.kpy = 0.95
-        self.kiy = 0.01
-        self.kdy = 0.05
+        self.kpy = kp if kp else 0.95
+        self.kiy = ki if ki else 0.01
+        self.kdy = kd if kd else 0.05
 
         self.prev_dx = 0.0
         self.prev_dy = 0.0
@@ -33,11 +33,13 @@ class PID:
 
         px = self.kpx * bx
         self.prev_ix += bx * dt
+        self.prev_ix = max(-1000.0, min(1000.0, self.prev_ix))
         ix = self.kix * self.prev_ix
         dfx = self.kdx * (bx - self.prev_dx)
 
         py = self.kpy * by
         self.prev_iy += by * dt
+        self.prev_iy = max(-1000.0, min(1000.0, self.prev_iy))
         iy = self.kiy * self.prev_iy
         dfy = self.kdy * (by - self.prev_dy)
 

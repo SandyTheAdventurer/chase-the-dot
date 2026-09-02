@@ -75,3 +75,17 @@ Sets simulation speed and size parameters:
 - Delimiter: `b'\r\n'` (2 bytes)
 
 ---
+## 3. Future Plans
+
+### Algorithms
+- ~~PID~~ (Completed)
+- ~~VPG~~ (Completed)
+- PPO
+- DDPG
+- TD3
+- SAC
+
+### Experimentational Future Plans
+- **DreamerV3:** Explore world models and latent dynamics planning for a continuous tracking task.
+- **Genetic Algorithms (GA):** Use symbolic regression or GA to evolve an explicit closed-form mathematical equation that deterministically solves the pathing problem.
+- **Parallel Environments:** Wrap the TCP socket architecture in a vectorized environment (e.g., `SubprocVecEnv`) to gather experience from multiple application instances running on different ports simultaneously, massively increasing sample efficiency.

@@ -1,8 +1,10 @@
 import argparse
 import sys
+import numpy as np
 from chase_the_dot.env import ChaseTheDotEnv
 from chase_the_dot.pid import PID
 from chase_the_dot.vpg import VPG
+from tqdm import tqdm
 
 def main(default_algo: str = "pid") -> None:
     parser = argparse.ArgumentParser(description="Chase the Dot - Real-time Tracking Agent")
@@ -15,11 +17,11 @@ def main(default_algo: str = "pid") -> None:
     parser.add_argument("--kp", type=float, default=0.0, help="Proportional gain (PID)")
     parser.add_argument("--ki", type=float, default=0.0, help="Integral gain (PID)")
     parser.add_argument("--kd", type=float, default=0.0, help="Derivative gain (PID)")
-    # VPG parameters
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    # RL parameters
+    parser.add_argument("--lr", type=float, default=0.0003, help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--entropy-coeff", type=float, default=0.01, help="Entropy coefficient (VPG)")
-    parser.add_argument("--batch-size", type=int, default=100, help="Steps between updates")
+    parser.add_argument("--batch-size", type=int, default=256, help="Steps between updates")
     
     # Env parameters
     parser.add_argument("--speed", type=int, default=None, help="Configure object speed (100-500)")
@@ -40,39 +42,55 @@ def main(default_algo: str = "pid") -> None:
         env.configure(speed=args.speed, size=args.size)
 
     if args.algo == "pid":
-        print(f"Initializing Learnable PID Policy (lr={args.lr})")
-        policy = PID()
+        print(f"Initializing PID Policy (kp={args.kp}, ki={args.ki}, kd={args.kd})")
+        policy = PID(kp=args.kp, ki=args.ki, kd=args.kd)
     else:
-        print(f"Initializing VPG Policy (lr={args.lr}, gamma={args.gamma})")
-        policy = VPG(lr=args.lr, gamma=args.gamma, entropy_coeff=args.entropy_coeff)
+        print(f"Initializing VPG Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
+        policy = VPG(lr=args.lr, gamma=args.gamma, entropy_coeff=args.entropy_coeff, batch_size=args.batch_size)
 
     print(f"Starting tracking loop using {args.algo.upper()}. Press Ctrl+C to stop.")
 
+    # Initialize CSV log in logs/ directory
+    import os
+    os.makedirs("logs", exist_ok=True)
+    log_filename = os.path.join("logs", f"{args.algo}_log.csv")
+    with open(log_filename, "w") as f:
+        f.write("step,avg_reward,loss,avg_distance,avg_dt,in_bounds_percent\n")
+    loss = 0.0
+
     try:
         step_idx = 0
-        in_bounds_count = 0
-        rewards = []
+        batch_reward = 0.0
+        batch_distance = 0.0
+        batch_dt = 0.0
+        batch_in_bounds = 0
+        
+        state = env.receive_state(wait_for_new=True)
+        
+        # Initialize tqdm progress bar
+        pbar = tqdm(total=args.timesteps, desc=f"Training {args.algo.upper()}", unit="step")
         
         while step_idx < args.timesteps:
-            # 1. Observe state
-            state = env.receive_state(wait_for_new=True)
-            
-            # 2. Select action
+            # 1. Select action
             action = policy(state)
             
-            # 3. Take step in environment
-            # If action is None, skip sending and just get metrics
+            # 2. Take step in environment
             if action is not None:
                 obs, reward, terminated, truncated, info = env.step(action)
             else:
-                obs, reward, info = env._metrics(state)
+                s = env.receive_state(wait_for_new=True)
+                obs, reward, info = env._metrics(s)
             
-            rewards.append(reward)
+            # Update state for the next iteration from the new observation's raw state
+            state = info["state"]
             step_idx += 1
             
-            in_bounds = info.get("in_bounds", False)
-            if in_bounds:
-                in_bounds_count += 1
+            # 3. Accumulate Metrics
+            batch_reward += reward
+            batch_distance += info.get("distance", 0.0)
+            batch_dt += info.get("dt", 0.0)
+            if info.get("in_bounds", False):
+                batch_in_bounds += 1
 
             # 4. Train Policy
             step_loss = policy.learn(reward)
@@ -80,11 +98,35 @@ def main(default_algo: str = "pid") -> None:
                 loss = step_loss
 
             # 5. Logging
-            pass
+            if step_idx % args.batch_size == 0:
+                avg_reward = batch_reward / args.batch_size
+                avg_distance = batch_distance / args.batch_size
+                avg_dt = batch_dt / args.batch_size
+                in_bounds_percent = (batch_in_bounds / args.batch_size) * 100.0
+                
+                with open(log_filename, "a") as f:
+                    f.write(f"{step_idx},{avg_reward:.4f},{loss:.4f},{avg_distance:.4f},{avg_dt:.4f},{in_bounds_percent:.1f}\n")
+                
+                # Update tqdm metrics
+                pbar.set_postfix(
+                    reward=f"{avg_reward:.2f}", 
+                    loss=f"{loss:.2f}",
+                    dist=f"{avg_distance:.1f}",
+                    in_bounds=f"{in_bounds_percent:.0f}%"
+                )
+                
+                # Reset accumulators
+                batch_reward = 0.0
+                batch_distance = 0.0
+                batch_dt = 0.0
+                batch_in_bounds = 0
+            
+            pbar.update(1)
 
     except KeyboardInterrupt:
         print("\nStopping controller...")
     finally:
+        pbar.close()
         env.close()
         print("Disconnected cleanly.")
 
