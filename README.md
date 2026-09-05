@@ -80,12 +80,28 @@ Sets simulation speed and size parameters:
 ### Algorithms
 - ~~PID~~ (Completed)
 - ~~VPG~~ (Completed)
-- PPO
-- DDPG
-- TD3
-- SAC
+- ~~PPO~~ (Completed)
+- ~~DDPG~~ (Completed)
+- ~~TD3~~ (Completed)
+- ~~SAC~~ (Completed)
 
 ### Experimentational Future Plans
+- **Detailed Logging & Visualization:** Expand logging metrics beyond basic rewards/losses to include advanced diagnostics like KL divergence, entropy loss, and critic explained variance for better algorithm debugging.
+- **Frame Stacking:** Stack the $N$ most recent observations to give the agent a sense of velocity and acceleration.
+- **Multi-step Action Prediction:** Train the network to predict a sequence of future actions to compensate for inference latency.
+- **Hindsight Experience Replay (HER):** Combine HER with off-policy algorithms to massively improve sample efficiency by learning from failures via goal relabeling.
 - **DreamerV3:** Explore world models and latent dynamics planning for a continuous tracking task.
 - **Genetic Algorithms (GA):** Use symbolic regression or GA to evolve an explicit closed-form mathematical equation that deterministically solves the pathing problem.
 - **Parallel Environments:** Wrap the TCP socket architecture in a vectorized environment (e.g., `SubprocVecEnv`) to gather experience from multiple application instances running on different ports simultaneously, massively increasing sample efficiency.
+
+---
+## 4. Issues & Troubleshooting
+
+### Resolved Issues
+- **Finding Environment Bounds:** The strict coordinate boundaries were unknown. **Solution:** Discovered the bounds by analyzing the environment outputs ($X \in [-50, 950]$ and $Y \in [-50, 750]$).
+- **Observation Decoding:** The binary payload structure was undocumented. **Solution:** Successfully decoded the packet structure by cross-referencing the problem statement.
+- **Uncorrelated Actions & Observations:** Actions appeared to have no immediate effect on the observations. **Solution:** Discovered the TCP connection operates in an open-drain streaming mode, meaning delayed receiving caused old states to pile up. Fixed by implementing a buffer-draining thread to ensure the agent always acts on the freshest state.
+- **Misinterpreted `blue_x` / `blue_y` variables:** Initially assumed these represented the absolute screen coordinates of the Blue Dot. **Solution:** After analyzing the live values, determined they actually represent the *tracking error* ($\Delta X, \Delta Y$) between the Blue and Green dots.
+
+### Unresolved Problems
+- **Inference Latency Drops:** The environment stream is continuous and does not wait for the agent. Sometimes the environment fails to receive actions in time (or drops them) due to the latency introduced by the algorithms inferencing or running their `learn()` loops.

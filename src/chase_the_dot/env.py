@@ -119,11 +119,17 @@ class ChaseTheDotEnv(gym.Env):
 
     def _resolve_action(self, action, y: Optional[int] = None) -> Tuple[int, int]:
         """Convert any supported action format to absolute (x, y) pixel coordinates."""
-        # Legacy: step(x_int, y_int)
         if y is not None:
+            # Legacy: step(x_int, y_int) assumes absolute coordinates
             x, y = int(action), int(y)
         else:
-            x, y = float(action[0]), float(action[1])
+            # Array-like action is treated as a relative offset
+            if self._latest is not None:
+                gx, gy = self._latest[0], self._latest[1]
+                x = gx + float(action[0]) * 100.0
+                y = gy + float(action[1]) * 100.0
+            else:
+                x, y = float(action[0]), float(action[1])
 
         # Clamp to screen bounds
         x = max(-50, min(950, int(round(x))))
@@ -136,9 +142,6 @@ class ChaseTheDotEnv(gym.Env):
         s = self.receive_state(wait_for_new=wait_for_new)
         obs, reward, info = self._metrics(s)
         return obs, reward, False, False, info
-
-    step_rl = step
-
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
         super().reset(seed=seed)
         s = self.receive_state(wait_for_new=False)

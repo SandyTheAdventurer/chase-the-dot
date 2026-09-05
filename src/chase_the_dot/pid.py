@@ -46,8 +46,8 @@ class PID:
         ex = px + ix + dfx
         ey = py + iy + dfy
 
-        action_x = max(-50, min(950, int(round(blue_x - ex))))
-        action_y = max(-50, min(750, int(round(blue_y - ey))))
+        action_x = (bx - ex) / 100.0
+        action_y = (by - ey) / 100.0
 
         self.prev_dx = bx
         self.prev_dy = by

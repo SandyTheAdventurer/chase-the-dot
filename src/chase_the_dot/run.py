@@ -4,11 +4,16 @@ import numpy as np
 from chase_the_dot.env import ChaseTheDotEnv
 from chase_the_dot.pid import PID
 from chase_the_dot.vpg import VPG
+from chase_the_dot.a2c import A2C
+from chase_the_dot.ddpg import DDPG
+from chase_the_dot.td3 import TD3
+from chase_the_dot.sac import SAC
+from chase_the_dot.ppo import PPO
 from tqdm import tqdm
 
 def main(default_algo: str = "pid") -> None:
     parser = argparse.ArgumentParser(description="Chase the Dot - Real-time Tracking Agent")
-    parser.add_argument("--algo", type=str, choices=["pid", "vpg"], default=default_algo, help=f"Algorithm to use (default: {default_algo})")
+    parser.add_argument("--algo", type=str, choices=["pid", "vpg", "a2c", "ddpg", "td3", "sac", "ppo"], default=default_algo, help=f"Algorithm to use (default: {default_algo})")
     parser.add_argument("--timesteps", type=int, default=100000, help="Number of timesteps to run (default: 100,000)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Target TCP host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=6102, help="Target TCP port (default: 6102)")
@@ -44,6 +49,21 @@ def main(default_algo: str = "pid") -> None:
     if args.algo == "pid":
         print(f"Initializing PID Policy (kp={args.kp}, ki={args.ki}, kd={args.kd})")
         policy = PID(kp=args.kp, ki=args.ki, kd=args.kd)
+    elif args.algo == "a2c":
+        print(f"Initializing A2C Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
+        policy = A2C(lr=args.lr, gamma=args.gamma, entropy_coeff=args.entropy_coeff, batch_size=args.batch_size)
+    elif args.algo == "ddpg":
+        print(f"Initializing DDPG Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
+        policy = DDPG(lr=args.lr, gamma=args.gamma, entropy_coeff=args.entropy_coeff, batch_size=args.batch_size)
+    elif args.algo == "td3":
+        print(f"Initializing TD3 Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
+        policy = TD3(lr=args.lr, gamma=args.gamma, batch_size=args.batch_size)
+    elif args.algo == "sac":
+        print(f"Initializing SAC Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
+        policy = SAC(lr=args.lr, gamma=args.gamma, batch_size=args.batch_size)
+    elif args.algo == "ppo":
+        print(f"Initializing PPO Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
+        policy = PPO(lr=args.lr, gamma=args.gamma, entropy_coeff=args.entropy_coeff, batch_size=args.batch_size)
     else:
         print(f"Initializing VPG Policy (lr={args.lr}, gamma={args.gamma}, batch_size={args.batch_size})")
         policy = VPG(lr=args.lr, gamma=args.gamma, entropy_coeff=args.entropy_coeff, batch_size=args.batch_size)
@@ -135,6 +155,21 @@ def run_pid():
 
 def run_vpg():
     main(default_algo="vpg")
+
+def run_a2c():
+    main(default_algo="a2c")
+
+def run_ddpg():
+    main(default_algo="ddpg")
+
+def run_td3():
+    main(default_algo="td3")
+
+def run_sac():
+    main(default_algo="sac")
+
+def run_ppo():
+    main(default_algo="ppo")
 
 if __name__ == "__main__":
     main()

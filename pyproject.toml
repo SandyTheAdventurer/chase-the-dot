@@ -20,6 +20,11 @@ dependencies = [
 chase-the-dot = "chase_the_dot.run:main"
 pid = "chase_the_dot.run:run_pid"
 vpg = "chase_the_dot.run:run_vpg"
+a2c = "chase_the_dot.run:run_a2c"
+ddpg = "chase_the_dot.run:run_ddpg"
+td3 = "chase_the_dot.run:run_td3"
+sac = "chase_the_dot.run:run_sac"
+ppo = "chase_the_dot.run:run_ppo"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
