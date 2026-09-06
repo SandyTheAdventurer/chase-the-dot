@@ -1,9 +1,10 @@
 import torch
 from torch import nn
 import numpy as np
+from collections import deque
+import random
 from chase_the_dot.utils import mlp
 from chase_the_dot.env import normalize
-import random
 
 class DDPG(nn.Module):
     def __init__(self, actor = (64, 64, 64), critic = (64, 64, 64), lr = 0.01, gamma = 0.99, tau = 0.005, entropy_coeff = 0.01, batch_size = 32, inference = False):
@@ -20,12 +21,17 @@ class DDPG(nn.Module):
         self.gamma = gamma
         self.tau = tau
         self.inference = inference
-        self.buffer = []
+        self.buffer = deque(maxlen=100000)
         self.batch_size = batch_size
         self.transition = None
 
-        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr = lr)
-        self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr = lr)
+        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=lr, foreach=True)
+        self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=lr, foreach=True)
+
+        self.target_critic_params = list(self.target_critic.parameters())
+        self.critic_params = list(self.critic.parameters())
+        self.target_actor_params = list(self.target_actor.parameters())
+        self.actor_params = list(self.actor.parameters())
 
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
@@ -38,8 +44,6 @@ class DDPG(nn.Module):
         if self.transition is not None and len(self.transition) == 3:
             self.transition.append(feat)
             self.buffer.append(self.transition)
-            if len(self.buffer) > 100000:
-                self.buffer.pop(0)
 
         if not self.inference:
             self.transition = [feat, action.detach()]
@@ -77,10 +81,26 @@ class DDPG(nn.Module):
         actor_loss.backward()
         self.actor_optim.step()
 
-        for p, target_p in zip(self.critic.parameters(), self.target_critic.parameters()):
-            target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
+        with torch.no_grad():
+            torch._foreach_lerp_(
+                self.target_critic_params,
+                self.critic_params,
+                self.tau,
+            )
+            torch._foreach_lerp_(
+                self.target_actor_params,
+                self.actor_params,
+                self.tau,
+            )
 
-        for p, target_p in zip(self.actor.parameters(), self.target_actor.parameters()):
-            target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
+        return {
+            "loss": (critic_loss.item() + actor_loss.item()) / 2.0,
+            "critic_loss": critic_loss.item(),
+            "actor_loss": actor_loss.item()
+        }
 
-        return (critic_loss.item() + actor_loss.item()) / 2.0
+    def save(self, path):
+        torch.save(self.state_dict(), path)
+
+    def load(self, path):
+        self.load_state_dict(torch.load(path, weights_only=True))

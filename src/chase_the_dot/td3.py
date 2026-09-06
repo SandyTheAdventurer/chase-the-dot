@@ -3,6 +3,7 @@ from torch import nn
 import numpy as np
 from chase_the_dot.utils import mlp
 from chase_the_dot.env import normalize
+from collections import deque
 import random
 
 class TD3(nn.Module):
@@ -25,15 +26,22 @@ class TD3(nn.Module):
         self.noise_std = noise_std
         self.noise_lmt = noise_lmt
         self.inference = inference
-        self.buffer = []
+        self.buffer = deque(maxlen=100000)
         self.batch_size = batch_size
         self.transition = None
         self.steps = 0
         self.policy_delay = policy_delay
         self.last_actor_loss = 0.0
 
-        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr = lr)
-        self.critic_optim = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr = lr)
+        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=lr, foreach=True)
+        self.critic_optim = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr=lr, foreach=True)
+
+        self.target_critic1_params = list(self.target_critic1.parameters())
+        self.critic1_params = list(self.critic1.parameters())
+        self.target_critic2_params = list(self.target_critic2.parameters())
+        self.critic2_params = list(self.critic2.parameters())
+        self.target_actor_params = list(self.target_actor.parameters())
+        self.actor_params = list(self.actor.parameters())
 
     def _smoothen(self, actions):
         noise = torch.normal(0, self.noise_std, size=actions.shape)
@@ -52,8 +60,6 @@ class TD3(nn.Module):
         if self.transition is not None and len(self.transition) == 3:
             self.transition.append(feat)
             self.buffer.append(self.transition)
-            if len(self.buffer) > 100000:
-                self.buffer.pop(0)
 
         if not self.inference:
             self.transition = [feat, action.detach()]
@@ -103,15 +109,33 @@ class TD3(nn.Module):
             self.actor_optim.step()
             self.last_actor_loss = actor_loss.item()
 
-            for p, target_p in zip(self.critic1.parameters(), self.target_critic1.parameters()):
-                target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
-
-            for p, target_p in zip(self.critic2.parameters(), self.target_critic2.parameters()):
-                target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
-
-            for p, target_p in zip(self.actor.parameters(), self.target_actor.parameters()):
-                target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
+            with torch.no_grad():
+                torch._foreach_lerp_(
+                    self.target_critic1_params,
+                    self.critic1_params,
+                    self.tau,
+                )
+                torch._foreach_lerp_(
+                    self.target_critic2_params,
+                    self.critic2_params,
+                    self.tau,
+                )
+                torch._foreach_lerp_(
+                    self.target_actor_params,
+                    self.actor_params,
+                    self.tau,
+                )
 
         self.steps += 1
 
-        return (critic_loss.item() + self.last_actor_loss) / 2.0
+        return {
+            "loss": (critic_loss.item() + self.last_actor_loss) / 2.0,
+            "critic_loss": critic_loss.item(),
+            "actor_loss": self.last_actor_loss
+        }
+
+    def save(self, path):
+        torch.save(self.state_dict(), path)
+
+    def load(self, path):
+        self.load_state_dict(torch.load(path, weights_only=True))

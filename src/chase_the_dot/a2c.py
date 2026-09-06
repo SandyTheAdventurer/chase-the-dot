@@ -19,24 +19,27 @@ class A2C(nn.Module):
         self.gamma = gamma
         self.inference = inference
         self.entropy_coeff = entropy_coeff
-        self.rollout = []
         self.batch_size = batch_size
-        self.optim = torch.optim.Adam(self.parameters(), lr=lr)
+        self.ptr = 0
+        
+        self.logprob_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.entropy_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.value_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.reward_buf = torch.zeros(batch_size, dtype=torch.float32)
+
+        self.optim = torch.optim.Adam(self.parameters(), lr=lr, foreach=True)
 
     def _compute_gae(self, rewards, values, gae_lambda=0.95):
-        advantages = []
+        advantages = torch.zeros_like(rewards)
         gae = 0
         next_value = 0
         
-        for r, v in zip(reversed(rewards), reversed(values)):
-            delta = r + self.gamma * next_value - v
+        for i in reversed(range(len(rewards))):
+            delta = rewards[i] + self.gamma * next_value - values[i]
             gae = delta + self.gamma * gae_lambda * gae
-            advantages.append(gae)
-            next_value = v
+            advantages[i] = gae
+            next_value = values[i]
             
-        advantages.reverse()
-        advantages = torch.tensor(advantages, dtype=torch.float32)
-        
         returns = advantages + values
         
         if len(advantages) > 1:
@@ -45,8 +48,6 @@ class A2C(nn.Module):
         return advantages, returns
 
     def forward(self, X):
-        if X is None:
-            return None
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
 
         if self.sde:
@@ -64,27 +65,27 @@ class A2C(nn.Module):
             value = self.critic(feat)
             log_prob = dist.log_prob(action).sum(dim=-1)
             entropy = dist.entropy().sum(dim=-1)
-            self.rollout.append([log_prob, entropy, value])
+            
+            self.logprob_buf[self.ptr] = log_prob
+            self.entropy_buf[self.ptr] = entropy
+            self.value_buf[self.ptr] = value.squeeze(-1)
 
         return action.detach().numpy()
 
     def learn(self, reward):
-        if not self.rollout:
+        if self.inference:
             return 0.0
-        if len(self.rollout[-1]) == 3:
-            self.rollout[-1].append(reward)
-        else:
-            self.rollout[-1][3] += reward
+            
+        self.reward_buf[self.ptr] = reward
+        self.ptr += 1
 
-        if len(self.rollout) < self.batch_size or len(self.rollout[-1]) < 4:
+        if self.ptr < self.batch_size:
             return 0.0
-        log_probs, entropies, values, rewards = zip(*self.rollout)
 
-        log_probs = torch.stack(log_probs)
-        entropies = torch.stack(entropies)
-        values = torch.stack(values).squeeze(-1)
-
-        rewards = torch.tensor(rewards, dtype=torch.float32)
+        log_probs = self.logprob_buf
+        entropies = self.entropy_buf
+        values = self.value_buf
+        rewards = self.reward_buf
 
         advantages, returns = self._compute_gae(rewards, values.detach())
 
@@ -98,8 +99,13 @@ class A2C(nn.Module):
         loss.backward()
         self.optim.step()
 
-        self.rollout.clear()
-        return loss.item()
+        self.ptr = 0
+        return {
+            "loss": loss.item(),
+            "actor_loss": actor_loss.item(),
+            "critic_loss": critic_loss.item(),
+            "entropy": entropies.mean().item()
+        }
 
     def save(self, path):
         torch.save(self.state_dict(), path)

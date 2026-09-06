@@ -3,6 +3,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+from line_profiler import profile
 
 _RX = struct.Struct(">iiii??2s")
 _P = struct.Struct(">cbbii2s")
@@ -10,15 +11,12 @@ _C = struct.Struct(">cbbId2s")
 def normalize(state) -> np.ndarray:
     """Normalize a raw pixel state to the observation range.
 
-    If the state is already normalized (first element <= 2.0), it is
-    returned as-is.  Otherwise the first four elements (green x/y and
-    tracking error x/y) are divided by 1000 to bring them into a
-    small range suitable for neural networks.
-
-    Works with numpy arrays, lists, or torch tensors.
+    If the state is already normalized, it is returned as-is.
+    Otherwise the first four elements are divided by 1000.
     """
     s = np.asarray(state, dtype=np.float32)
-    if s[0] > 2.0:
+    # Check max absolute value of the coordinate fields to see if it needs scaling
+    if max(abs(s[0]), abs(s[1]), abs(s[2]), abs(s[3])) > 2.0:
         return np.array([
             s[0] / 1000., s[1] / 1000.,
             s[2] / 1000., s[3] / 1000.,
@@ -44,6 +42,7 @@ class ChaseTheDotEnv(gym.Env):
     ) -> None:
         super().__init__()
         self.host, self.port, self.timeout = host, port, timeout
+        self.current_size = 50.0
 
         self.action_space = spaces.Box(
             np.array([-50., -50.], np.float32),
@@ -66,6 +65,7 @@ class ChaseTheDotEnv(gym.Env):
         self.host, self.port = host or self.host, port or self.port
         if self.socket: self.close()
         self.socket = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._stop.clear()
         threading.Thread(target=self._drain, name="ChaseTheDot-Drain", daemon=True).start()
 
@@ -94,10 +94,8 @@ class ChaseTheDotEnv(gym.Env):
                         del buf[:len(buf) if idx == -1 else idx + 2]
             except Exception: break
 
-    def send_position(self, x: int, y: int) -> None:
-        if self.socket: self.socket.sendall(_P.pack(b"P", 13, 10, int(x), int(y), b"\r\n"))
-
     def configure(self, speed: int, size: float) -> None:
+        self.current_size = float(size)
         if self.socket: self.socket.sendall(_C.pack(b"C", 13, 10, int(speed), float(size), b"\r\n"))
 
     def receive_state(self, wait_for_new: bool = False, timeout: Optional[float] = None) -> np.ndarray:
@@ -109,43 +107,37 @@ class ChaseTheDotEnv(gym.Env):
             if not self._new_data.wait(t): raise TimeoutError("Timed out waiting for initial state")
         return self._latest
 
-    def _metrics(self, s: np.ndarray) -> Tuple[np.ndarray, float, dict]:
+    @profile
+    def step(self, action, y: Optional[int] = None, wait_for_new: bool = True) -> Tuple[np.ndarray, float, bool, bool, dict]:
+        if y is not None:
+            x, y_out = int(action), int(y)
+        else:
+            if self._latest is not None:
+                gx, gy = self._latest[0], self._latest[1]
+                x = gx + float(action[0]) * 100.0 + (self.current_size)/(np.pi*2)
+                y_out = gy + float(action[1]) * 100.0 + (self.current_size)/(np.pi*2)
+            else:
+                x, y_out = float(action[0]), float(action[1])
+        x = max(-50, min(950, int(round(x))))
+        y_out = max(-50, min(750, int(round(y_out))))
+        if self.socket:
+            self.socket.sendall(_P.pack(b"P", 13, 10, int(x), int(y_out), b"\r\n"))
+            
+        s = self.receive_state(wait_for_new=wait_for_new)
         dist = float((s[2]**2 + s[3]**2)**0.5)
         in_bounds = not (bool(s[4]) or bool(s[5]))
         reward = 1.0 - (dist / 100.) if in_bounds else -0.2 - (dist / 50.)
         obs = normalize(s)
         info = {"distance": dist, "in_bounds": in_bounds, "error_x": bool(s[4]), "error_y": bool(s[5]), "dt": float(s[6]), "state": s}
-        return obs, reward, info
-
-    def _resolve_action(self, action, y: Optional[int] = None) -> Tuple[int, int]:
-        """Convert any supported action format to absolute (x, y) pixel coordinates."""
-        if y is not None:
-            # Legacy: step(x_int, y_int) assumes absolute coordinates
-            x, y = int(action), int(y)
-        else:
-            # Array-like action is treated as a relative offset
-            if self._latest is not None:
-                gx, gy = self._latest[0], self._latest[1]
-                x = gx + float(action[0]) * 100.0
-                y = gy + float(action[1]) * 100.0
-            else:
-                x, y = float(action[0]), float(action[1])
-
-        # Clamp to screen bounds
-        x = max(-50, min(950, int(round(x))))
-        y = max(-50, min(750, int(round(y))))
-        return x, y
-
-    def step(self, action, y: Optional[int] = None, wait_for_new: bool = True) -> Tuple[np.ndarray, float, bool, bool, dict]:
-        x, y = self._resolve_action(action, y)
-        self.send_position(x, y)
-        s = self.receive_state(wait_for_new=wait_for_new)
-        obs, reward, info = self._metrics(s)
         return obs, reward, False, False, info
+        
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
         super().reset(seed=seed)
         s = self.receive_state(wait_for_new=False)
-        obs, _, info = self._metrics(s)
+        dist = float((s[2]**2 + s[3]**2)**0.5)
+        in_bounds = not (bool(s[4]) or bool(s[5]))
+        obs = normalize(s)
+        info = {"distance": dist, "in_bounds": in_bounds, "error_x": bool(s[4]), "error_y": bool(s[5]), "dt": float(s[6]), "state": s}
         return obs, info
 
     def close(self) -> None:

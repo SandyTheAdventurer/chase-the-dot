@@ -5,7 +5,7 @@ from chase_the_dot.env import normalize
 from chase_the_dot.utils import mlp
 
 class PPO(nn.Module):
-    def __init__(self, actor=(64, 64, 64), critic = (64, 64, 64), sde=False, lr=0.01, gamma=0.99, entropy_coeff=0.01, clip_ratio = 0.2, ppo_epochs = 10, inference=False, batch_size = 32):
+    def __init__(self, actor=(64, 64, 64), critic = (64, 64, 64), sde=False, lr=0.01, gamma=0.99, entropy_coeff=0.01, clip_ratio = 0.2, ppo_epochs = 3, inference=False, batch_size = 32):
         super().__init__()
 
         self.sde = sde
@@ -21,24 +21,28 @@ class PPO(nn.Module):
         self.entropy_coeff = entropy_coeff
         self.clip_ratio = clip_ratio
         self.ppo_epochs = ppo_epochs
-        self.rollout = []
         self.batch_size = batch_size
-        self.optim = torch.optim.Adam(self.parameters(), lr=lr)
+        self.ptr = 0
+        
+        self.state_buf = torch.zeros((batch_size, 7), dtype=torch.float32)
+        self.action_buf = torch.zeros((batch_size, 2), dtype=torch.float32)
+        self.logprob_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.value_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.reward_buf = torch.zeros(batch_size, dtype=torch.float32)
+
+        self.optim = torch.optim.Adam(self.parameters(), lr=lr, foreach=True)
 
     def _compute_gae(self, rewards, values, gae_lambda=0.95):
-        advantages = []
+        advantages = torch.zeros_like(rewards)
         gae = 0
         next_value = 0
         
-        for r, v in zip(reversed(rewards), reversed(values)):
-            delta = r + self.gamma * next_value - v
+        for i in reversed(range(len(rewards))):
+            delta = rewards[i] + self.gamma * next_value - values[i]
             gae = delta + self.gamma * gae_lambda * gae
-            advantages.append(gae)
-            next_value = v
+            advantages[i] = gae
+            next_value = values[i]
             
-        advantages.reverse()
-        advantages = torch.tensor(advantages, dtype=torch.float32)
-        
         returns = advantages + values
         
         if len(advantages) > 1:
@@ -47,8 +51,6 @@ class PPO(nn.Module):
         return advantages, returns
 
     def forward(self, X):
-        if X is None:
-            return None
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
 
         if self.sde:
@@ -65,28 +67,28 @@ class PPO(nn.Module):
         if not self.inference:
             value = self.critic(feat)
             log_prob = dist.log_prob(action).sum(dim=-1)
-            self.rollout.append([feat, action, log_prob, value])
+            self.state_buf[self.ptr] = feat
+            self.action_buf[self.ptr] = action
+            self.logprob_buf[self.ptr] = log_prob
+            self.value_buf[self.ptr] = value.squeeze(-1)
 
         return action.detach().numpy()
 
     def learn(self, reward):
-        if not self.rollout:
+        if self.inference:
             return 0.0
-        if len(self.rollout[-1]) == 4:
-            self.rollout[-1].append(reward)
-        else:
-            self.rollout[-1][4] += reward
+            
+        self.reward_buf[self.ptr] = reward
+        self.ptr += 1
 
-        if len(self.rollout) < self.batch_size or len(self.rollout[-1]) < 5:
+        if self.ptr < self.batch_size:
             return 0.0
 
-        states, actions, old_log_probs, values, rewards = zip(*self.rollout)
-
-        states = torch.stack(states)
-        actions = torch.stack(actions)
-        old_log_probs = torch.stack(old_log_probs).detach()
-        values = torch.stack(values).squeeze(-1).detach()
-        rewards = torch.tensor(rewards, dtype=torch.float32)
+        states = self.state_buf
+        actions = self.action_buf
+        old_log_probs = self.logprob_buf.detach()
+        values = self.value_buf.detach()
+        rewards = self.reward_buf
 
         advantages, returns = self._compute_gae(rewards, values)
 
@@ -122,9 +124,23 @@ class PPO(nn.Module):
             self.optim.step()
 
             total_loss = loss.item()
+            approx_kl = (old_log_probs - new_log_probs).mean().item()
+            explained_var = (1.0 - torch.var(returns - new_values) / (torch.var(returns) + 1e-8)).item()
+            entropy_val = entropies.mean().item()
+            actor_loss_val = actor_loss.item()
+            critic_loss_val = critic_loss.item()
+            
+            out_metrics = {
+                "loss": total_loss,
+                "actor_loss": actor_loss_val,
+                "critic_loss": critic_loss_val,
+                "entropy": entropy_val,
+                "approx_kl": approx_kl,
+                "explained_var": explained_var
+            }
 
-        self.rollout.clear()
-        return total_loss
+        self.ptr = 0
+        return out_metrics
 
     def save(self, path):
         torch.save(self.state_dict(), path)

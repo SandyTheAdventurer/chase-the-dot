@@ -3,7 +3,9 @@ from torch import nn
 import numpy as np
 from chase_the_dot.utils import mlp
 from chase_the_dot.env import normalize
+from collections import deque
 import random
+from line_profiler import profile
 
 class SAC(nn.Module):
     def __init__(self, actor = (64, 64, 64), critic = (64, 64, 64), lr = 0.01, gamma = 0.99, tau = 0.005, alpha = 0.01, batch_size = 32, sde = False, inference = False):
@@ -24,16 +26,29 @@ class SAC(nn.Module):
 
         self.gamma = gamma
         self.tau = tau
-        self.alpha = alpha
+        
+        # Automatic Entropy Tuning (alpha)
+        self.target_entropy = -2.0  # Action space dimension is 2
+        self.log_alpha = nn.Parameter(torch.zeros(1))
+        self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=lr, foreach=True)
+        self.alpha = self.log_alpha.exp().item() # Fallback for printing/debugging
+
         self.inference = inference
         self.sde = sde
-        self.buffer = []
+        self.buffer = deque(maxlen=100000)
         self.batch_size = batch_size
         self.transition = None
 
-        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr = lr)
-        self.critic_optim = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr = lr)
+        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=lr, foreach=True)
+        self.critic_optim = torch.optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr=lr, foreach=True)
 
+        # Pre-cache parameter lists for lightning-fast target updates
+        self.target_critic1_params = list(self.target_critic1.parameters())
+        self.critic1_params = list(self.critic1.parameters())
+        self.target_critic2_params = list(self.target_critic2.parameters())
+        self.critic2_params = list(self.critic2.parameters())
+
+    @profile
     def sample(self, feat):
         if not self.sde:
             mu = self.actor(feat)
@@ -55,6 +70,7 @@ class SAC(nn.Module):
 
         return action, log_probs
 
+    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         
@@ -71,14 +87,13 @@ class SAC(nn.Module):
         if self.transition is not None and len(self.transition) == 3:
             self.transition.append(feat)
             self.buffer.append(self.transition)
-            if len(self.buffer) > 100000:
-                self.buffer.pop(0)
 
         if not self.inference:
             self.transition = [feat, action.detach()]
 
         return action.detach().numpy()
 
+    @profile
     def learn(self, reward):
         if self.transition is not None and len(self.transition) == 2:
             self.transition.append(torch.tensor([reward], dtype=torch.float32))
@@ -117,17 +132,43 @@ class SAC(nn.Module):
         q1_actor = self.critic1(torch.cat([obs, action], dim=1))
         q2_actor = self.critic2(torch.cat([obs, action], dim=1))
 
-        actor_loss = (self.alpha * log_probs - torch.min(q1_actor, q2_actor)).mean()
+        alpha = self.log_alpha.exp().detach()
+        actor_loss = (alpha * log_probs - torch.min(q1_actor, q2_actor)).mean()
 
         self.actor_optim.zero_grad()
         actor_loss.backward()
         self.actor_optim.step()
 
+        # Update Alpha (Temperature)
+        alpha_loss = -(self.log_alpha.exp() * (log_probs + self.target_entropy).detach()).mean()
+        self.alpha_optim.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optim.step()
+        self.alpha = self.log_alpha.exp().item()
+
         # Soft update target networks
-        for p, target_p in zip(self.critic1.parameters(), self.target_critic1.parameters()):
-            target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
+        with torch.no_grad():
+            torch._foreach_lerp_(
+                self.target_critic1_params,
+                self.critic1_params,
+                self.tau,
+            )
+            torch._foreach_lerp_(
+                self.target_critic2_params,
+                self.critic2_params,
+                self.tau,
+            )
 
-        for p, target_p in zip(self.critic2.parameters(), self.target_critic2.parameters()):
-            target_p.data.copy_(self.tau * p.data + (1 - self.tau) * target_p.data)
+        return {
+            "loss": (critic_loss.item() + actor_loss.item()) / 2.0,
+            "actor_loss": actor_loss.item(),
+            "critic_loss": critic_loss.item(),
+            "alpha_loss": alpha_loss.item(),
+            "alpha": self.alpha
+        }
 
-        return (critic_loss.item() + actor_loss.item()) / 2.0
+    def save(self, path):
+        torch.save(self.state_dict(), path)
+
+    def load(self, path):
+        self.load_state_dict(torch.load(path, weights_only=True))

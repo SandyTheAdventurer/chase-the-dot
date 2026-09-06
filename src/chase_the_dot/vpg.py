@@ -17,26 +17,27 @@ class VPG(nn.Module):
         self.gamma = gamma
         self.inference = inference
         self.entropy_coeff = entropy_coeff
-        self.rollout = []
         self.batch_size = batch_size
-        self.optim = torch.optim.Adam(self.parameters(), lr=lr)
+        self.ptr = 0
+        
+        self.logprob_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.entropy_buf = torch.zeros(batch_size, dtype=torch.float32)
+        self.reward_buf = torch.zeros(batch_size, dtype=torch.float32)
+
+        self.optim = torch.optim.Adam(self.parameters(), lr=lr, foreach=True)
 
     def _returns(self, rewards):
-        discounted_returns = []
-        g = 0
-        for r in reversed(rewards):
-            g = r + self.gamma * g
-            discounted_returns.append(g)
-        
-        discounted_returns.reverse()
-        returns = torch.tensor(discounted_returns, dtype=torch.float32)
+        returns = torch.zeros_like(rewards)
+        discounted_sum = 0
+        for i in reversed(range(len(rewards))):
+            discounted_sum = rewards[i] + self.gamma * discounted_sum
+            returns[i] = discounted_sum
+            
         if len(returns) > 1:
             returns = (returns - returns.mean()) / (returns.std() + 1e-8)
         return returns
 
     def forward(self, X):
-        if X is None:
-            return None
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
 
         if self.sde:
@@ -53,25 +54,25 @@ class VPG(nn.Module):
         if not self.inference:
             log_prob = dist.log_prob(action).sum(dim=-1)
             entropy = dist.entropy().sum(dim=-1)
-            self.rollout.append([log_prob, entropy])
+            
+            self.logprob_buf[self.ptr] = log_prob
+            self.entropy_buf[self.ptr] = entropy
 
         return action.detach().numpy()
 
     def learn(self, reward):
-        if not self.rollout:
+        if self.inference:
             return 0.0
-        if len(self.rollout[-1]) == 2:
-            self.rollout[-1].append(reward)
-        else:
-            self.rollout[-1][2] += reward
+            
+        self.reward_buf[self.ptr] = reward
+        self.ptr += 1
 
-        if len(self.rollout) < self.batch_size or len(self.rollout[-1]) < 3:
+        if self.ptr < self.batch_size:
             return 0.0
-        log_probs, entropies, rewards = zip(*self.rollout)
 
-        log_probs = torch.stack(log_probs)
-        entropies = torch.stack(entropies)
-        rewards = torch.tensor(rewards, dtype=torch.float32)
+        log_probs = self.logprob_buf
+        entropies = self.entropy_buf
+        rewards = self.reward_buf
 
         returns = self._returns(rewards)
 
@@ -84,8 +85,12 @@ class VPG(nn.Module):
         loss.backward()
         self.optim.step()
 
-        self.rollout.clear()
-        return loss.item()
+        self.ptr = 0
+        return {
+            "loss": loss.item(),
+            "actor_loss": actor_loss.item(),
+            "entropy": entropies.mean().item()
+        }
 
     def save(self, path):
         torch.save(self.state_dict(), path)
