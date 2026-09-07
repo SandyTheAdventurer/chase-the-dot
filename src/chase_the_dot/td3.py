@@ -1,36 +1,25 @@
 import torch
 from torch import nn
-import numpy as np
-from chase_the_dot.utils import mlp
+from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
-from collections import deque
-import random
 
-class TD3(nn.Module):
-    def __init__(self, actor = (64, 64, 64), critic = (64, 64, 64), lr = 0.01, gamma = 0.99, tau = 0.005, noise_std = 0.1, noise_lmt = 0.2, policy_delay = 2, batch_size = 32, inference = False):
+class TD3(BaseRL):
+    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, noise_std=0.1, noise_lmt=0.2, policy_delay=2, batch_size=32, inference=False):
         super().__init__()
-
-        self.actor = mlp(7, actor, 2)
-        self.critic1 = mlp(9, critic, 1)
-        self.critic2 = mlp(9, critic, 1)
-
-        self.target_actor = mlp(7, actor, 2)
-        self.target_critic1 = mlp(9, critic, 1)
-        self.target_critic2 = mlp(9, critic, 1)
+        self.actor = mlp(9, actor, 2)
+        self.critic1 = mlp(11, critic, 1)
+        self.critic2 = mlp(11, critic, 1)
+        self.target_actor = mlp(9, actor, 2)
+        self.target_critic1 = mlp(11, critic, 1)
+        self.target_critic2 = mlp(11, critic, 1)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 
-        self.gamma = gamma
-        self.tau = tau
-        self.noise_std = noise_std
-        self.noise_lmt = noise_lmt
-        self.inference = inference
-        self.buffer = deque(maxlen=100000)
-        self.batch_size = batch_size
-        self.transition = None
+        self.gamma, self.tau, self.noise_std, self.noise_lmt = gamma, tau, noise_std, noise_lmt
+        self.inference, self.batch_size, self.policy_delay = inference, batch_size, policy_delay
+        self.buffer = ReplayBuffer(maxlen=100000)
         self.steps = 0
-        self.policy_delay = policy_delay
         self.last_actor_loss = 0.0
 
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=lr, foreach=True)
@@ -44,98 +33,56 @@ class TD3(nn.Module):
         self.actor_params = list(self.actor.parameters())
 
     def _smoothen(self, actions):
-        noise = torch.normal(0, self.noise_std, size=actions.shape)
-        noise = torch.clamp(noise, -self.noise_lmt, self.noise_lmt)
-        return actions + noise
+        noise = torch.clamp(torch.normal(0, self.noise_std, size=actions.shape), -self.noise_lmt, self.noise_lmt)
+        return torch.clamp(actions + noise, -1.0, 1.0)
 
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
-        action = self.actor(feat)
-        
-        # Add exploration noise (different from target policy smoothing noise)
+        action = torch.tanh(self.actor(feat))
         if not self.inference:
-            noise = torch.normal(0, 0.1, size=action.shape)
-            action = action + noise
-
-        if self.transition is not None and len(self.transition) == 3:
-            self.transition.append(feat)
-            self.buffer.append(self.transition)
-
-        if not self.inference:
-            self.transition = [feat, action.detach()]
-
-        return action.detach().numpy()
+            action = torch.clamp(action + torch.normal(0, 0.1, size=action.shape), -1.0, 1.0)
+        self.buffer.store_step(feat, action, self.inference)
+        return action.detach().cpu().numpy()
 
     def learn(self, reward):
-        if self.transition is not None and len(self.transition) == 2:
-            self.transition.append(torch.tensor([reward], dtype=torch.float32))
-
-        if len(self.buffer) < self.batch_size:
-            return 0.0
-
-        batch = random.sample(self.buffer, self.batch_size)
-        obs, actions, rewards, next_obs = zip(*batch)
-
-        obs = torch.stack(obs)
-        actions = torch.stack(actions)
-        rewards = torch.stack(rewards)
-        next_obs = torch.stack(next_obs)
+        if self.inference: return 0.0
+        self.buffer.store_reward(reward)
+        batch = self.buffer.sample(self.batch_size)
+        if batch is None: return 0.0
+        obs, actions, rewards, next_obs = batch
 
         with torch.no_grad():
-            next_action = self.target_actor(next_obs)
-            next_action = self._smoothen(next_action)
+            next_action = self._smoothen(torch.tanh(self.target_actor(next_obs)))
             q1_next = self.target_critic1(torch.cat([next_obs, next_action], dim=1))
             q2_next = self.target_critic2(torch.cat([next_obs, next_action], dim=1))
-            next_q = torch.min(q1_next, q2_next)
-            target_q = rewards + self.gamma * next_q
+            target_q = rewards + self.gamma * torch.min(q1_next, q2_next)
 
         q1 = self.critic1(torch.cat([obs, actions], dim=1))
         q2 = self.critic2(torch.cat([obs, actions], dim=1))
-        critic1_loss = nn.functional.mse_loss(q1, target_q)
-        critic2_loss = nn.functional.mse_loss(q2, target_q)
-
-        critic_loss = critic1_loss + critic2_loss
+        critic_loss = nn.functional.mse_loss(q1, target_q) + nn.functional.mse_loss(q2, target_q)
 
         self.critic_optim.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(list(self.critic1.parameters()) + list(self.critic2.parameters()), max_norm=1.0)
         self.critic_optim.step()
 
         if self.steps % self.policy_delay == 0:
-            # TD3 typically only uses Q1 for the actor update
-            q = self.critic1(torch.cat([obs, self.actor(obs)], dim=1))
+            q = self.critic1(torch.cat([obs, torch.tanh(self.actor(obs))], dim=1))
             actor_loss = -q.mean()
             self.actor_optim.zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_optim.step()
             self.last_actor_loss = actor_loss.item()
 
             with torch.no_grad():
-                torch._foreach_lerp_(
-                    self.target_critic1_params,
-                    self.critic1_params,
-                    self.tau,
-                )
-                torch._foreach_lerp_(
-                    self.target_critic2_params,
-                    self.critic2_params,
-                    self.tau,
-                )
-                torch._foreach_lerp_(
-                    self.target_actor_params,
-                    self.actor_params,
-                    self.tau,
-                )
+                torch._foreach_lerp_(self.target_critic1_params, self.critic1_params, self.tau)
+                torch._foreach_lerp_(self.target_critic2_params, self.critic2_params, self.tau)
+                torch._foreach_lerp_(self.target_actor_params, self.actor_params, self.tau)
 
         self.steps += 1
-
         return {
             "loss": (critic_loss.item() + self.last_actor_loss) / 2.0,
             "critic_loss": critic_loss.item(),
             "actor_loss": self.last_actor_loss
         }
-
-    def save(self, path):
-        torch.save(self.state_dict(), path)
-
-    def load(self, path):
-        self.load_state_dict(torch.load(path, weights_only=True))

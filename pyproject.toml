@@ -16,6 +16,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "line-profiler>=5.0.2",
     "tensorboard>=2.21.0",
+    "pylabview>=0.1.2",
 ]
 
 [project.scripts]

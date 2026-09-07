@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Training artifacts
+runs/
+models/
+src/chase_the_dot/runs/
+*.zip

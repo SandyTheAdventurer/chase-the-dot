@@ -12,16 +12,19 @@ Based on the official [problem-statement.pdf](problem-statement.pdf) and reverse
 The benchmark challenges an external agent to control a **Blue Dot** in real time by sending target position commands over TCP. The goal is to track an autonomously moving **Green Dot** as closely as possible, minimizing position error $(\Delta X, \Delta Y)$ and keeping the error percentage below the required target ($< 1\%$ error rate).
 
 ### 1.2 Environment Details
-- **Coordinate Space Bounds**: $X \in [-50, 950]$ and $Y \in [-50, 750]$. Target commands must be clamped to these bounds to avoid the "Blue out of screen bound" fault.
-- **Observation State (`state` variable)**: The `receive_state()` function returns a 7-dimensional `float32` numpy array:
-  1. `state[0]`: **Green X** (Target to follow)
+- **Coordinate Space Bounds**: $X \in [-50, 950]$ and $Y \in [-50, 950]$. Target commands must be clamped to these bounds to avoid the "Blue out of screen bound" fault.
+- **Observation State (`state` variable)**: The `receive_state()` function returns a 9-dimensional `float32` numpy array (boolean boundary error flags `error_x` and `error_y` are processed internally for reward and diagnostics, but omitted from the observation):
+  1. `state[0]`: **Green X** (Target position)
   2. `state[1]`: **Green Y** 
-  3. `state[2]`: **Tracking Error X** (`Blue_X - Green_X`). Positive means Blue is to the right of Green.
-  4. `state[3]`: **Tracking Error Y** (`Blue_Y - Green_Y`). Positive means Blue is below Green.
-  5. `state[4]`: **Error Flag X** (1.0 if Out of Bounds, 0.0 if In Bounds)
-  6. `state[5]`: **Error Flag Y** (1.0 if Out of Bounds, 0.0 if In Bounds)
-  7. `state[6]`: **Delta Time (dt)** in seconds since the last packet received.
-- **RL Observation Space**: `env.step()` and `env.reset()` return an observation where the first 4 elements are scaled down by `1000.0` to normalize them for neural networks (e.g. VPG/DQN).
+  3. `state[2]`: **Tracking Error X** (`Green_X - Blue_X`). Positive means Green is to the right of Blue (Blue is to the left of Green).
+  4. `state[3]`: **Tracking Error Y** (`Green_Y - Blue_Y`). Positive means Green is below Blue (Blue is above Green).
+  5. `state[4]`: **Delta Time (dt)** in seconds since the last packet received.
+  6. `state[5]`: **Green Velocity X (vx)** in pixels/sec.
+  7. `state[6]`: **Green Velocity Y (vy)** in pixels/sec.
+  8. `state[7]`: **Green Acceleration X (ax)** in pixels/sec².
+  9. `state[8]`: **Green Acceleration Y (ay)** in pixels/sec².
+- **RL Observation Space**: `env.step()` and `env.reset()` return a 9-dimensional normalized observation vector (`obs`):
+  `[gx/1000, gy/1000, clip(bx, -100, 100)/50, clip(by, -100, 100)/50, dt, clip(vx, -300, 300)/300, clip(vy, -300, 300)/300, clip(ax, -10000, 10000)/10000, clip(ay, -10000, 10000)/10000]`.
 
 ### 1.3 Operating Modes
 - **Testing Mode**: The Green Dot follows a dynamically generated random parametric path on each run.
@@ -75,11 +78,35 @@ Sets simulation speed and size parameters:
 - Delimiter: `b'\r\n'` (2 bytes)
 
 ---
-## 3. Future Plans
+## 3. Usage
+
+### 3.1 Training
+Train any supported algorithm:
+```bash
+uv run chase-the-dot --algo sac --timesteps 200000
+uv run chase-the-dot --algo td3 --timesteps 200000
+uv run chase-the-dot --algo ppo --timesteps 200000
+```
+
+### 3.2 Evaluation Mode (`--eval`)
+Run any trained checkpoint deterministically (disables exploration noise and learning updates):
+```bash
+uv run chase-the-dot --algo sac --eval --timesteps 2000
+uv run chase-the-dot --algo td3 --eval --timesteps 2000
+uv run chase-the-dot --algo ppo --eval --timesteps 2000
+```
+You can also specify a custom checkpoint:
+```bash
+uv run chase-the-dot --algo sac --eval --model-path models/sac_latest.pt
+```
+
+---
+## 4. Future Plans
 
 ### Algorithms
 - ~~PID~~ (Completed)
 - ~~VPG~~ (Completed)
+- ~~A2C~~ (Completed)
 - ~~PPO~~ (Completed)
 - ~~DDPG~~ (Completed)
 - ~~TD3~~ (Completed)
@@ -95,17 +122,18 @@ Sets simulation speed and size parameters:
 - **Parallel Environments:** Wrap the TCP socket architecture in a vectorized environment (e.g., `SubprocVecEnv`) to gather experience from multiple application instances running on different ports simultaneously, massively increasing sample efficiency.
 
 ---
-## 4. Issues & Troubleshooting
+## 5. Issues & Troubleshooting
 
 ### Resolved Issues
-- **Finding Environment Bounds:** The strict coordinate boundaries were unknown. **Solution:** Discovered the bounds by analyzing the environment outputs ($X \in [-50, 950]$ and $Y \in [-50, 750]$).
+- **Finding Environment Bounds:** The strict coordinate boundaries were unknown. **Solution:** Discovered the bounds by analyzing the environment outputs ($X \in [-50, 950]$ and $Y \in [-50, 950]$).
 - **Observation Decoding:** The binary payload structure was undocumented. **Solution:** Successfully decoded the packet structure by cross-referencing the problem statement.
 - **Uncorrelated Actions & Observations:** Actions appeared to have no immediate effect on the observations. **Solution:** Discovered the TCP connection operates in an open-drain streaming mode, meaning delayed receiving caused old states to pile up. Fixed by implementing a buffer-draining thread to ensure the agent always acts on the freshest state.
 - **Misinterpreted `blue_x` / `blue_y` variables:** Initially assumed these represented the absolute screen coordinates of the Blue Dot. **Solution:** After analyzing the live values, determined they actually represent the *tracking error* ($\Delta X, \Delta Y$) between the Blue and Green dots.
 - **Single Instance Limitation:** The LabVIEW environment executable (`Cy_RL_PS.exe`) natively restricted itself to a single instance, preventing parallel training across different ports. **Solution:** Discovered that appending `allowmultipleinstances = TRUE` to the adjacent `Cy_RL_PS.ini` configuration file overrides the LabVIEW runtime engine, successfully enabling multiple application instances and parallel training!
 
 - **LabVIEW Error 56 / Inference Latency Drops:** The environment stream would routinely crash with a TCP Timeout (Error 56) due to perceived inference latency delaying the action payloads. **Solution:** Discovered that Python's default networking behavior (Nagle's Algorithm) was artificially buffering and delaying the tiny 15-byte action packets. Setting `socket.TCP_NODELAY` instantly transmitted the actions and completely eliminated the timeouts.
-- **Misaligned Visual Tracking Centers:** The agent successfully learned to zero out the tracking error, but the Blue Dot was visibly offset from the Green Dot (appearing to track its corner instead of the center). **Solution:** Discovered that the environment's `size` configuration parameter actually represents the *perimeter (circumference)* of the target dot, not the diameter or radius! Calculated the correct radius using `radius = size / (2 * pi)` and offset the incoming coordinate state to ensure all agents target the true geometric center.
+- **Tracking Offsets & Artificial Radius Misconception:** Previously, an artificial `size / (2 * pi)` offset was added to outgoing position commands. Socket probing on `Cy_RL_PS.exe` proved that LabVIEW evaluates tracking tolerances directly from exact mathematical coordinates: commanding `(gx, gy)` yields `0` error and 100% in-bounds rate, while adding `size / (2 * pi)` injected an artificial +8px error that triggered boundary faults (especially at small target sizes). Removed the artificial offset from `env.step()`.
+- **SAC Floating Above Green Dot / Reward Inversion:** SAC policies previously exhibited an issue where the Blue Dot floated persistently above the Green Dot. This was caused by an inverted reward incentive: a discrete velocity penalty (`vel_dist / 300`) spiked due to 50 Hz packet jitter, severely penalizing in-bounds states (-1.5 to -118) compared to out-of-bounds states (-0.6). The agent learned that floating outside the boundary yielded higher return. Combined with screen space coordinate conventions ($Y$ increases downwards, error is positive when Blue is above Green), the agent parked above the target. Fixed by establishing a clean monotonic reward function ($1.0 - dist / 100$ when in-bounds, $-0.2 - dist / 50$ when out-of-bounds) and correcting SAC temperature tuning ($\alpha$), action squashing (`tanh`), and gradient clipping.
 - **PyTorch Training Loop Bottlenecks:** The algorithms were suffering from PyTorch backend overhead. **Solution:** Used `line_profiler` and `kernprof` to identify three core bottlenecks and eliminated them:
   1. **Soft Updates:** Replaced slow parameter loops with `torch._foreach_lerp_` and eliminated the overhead of repeatedly calling `.parameters()` every step by pre-caching the parameter `list()` in `__init__`.
   2. **Optimizers:** Initialized Adam optimizers with `foreach=True` to utilize fused C++ vector operations for the backward pass.

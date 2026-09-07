@@ -342,6 +342,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "notebook" },
     { name = "pandas" },
+    { name = "pylabview" },
     { name = "scipy" },
     { name = "seaborn" },
     { name = "tensorboard" },
@@ -357,6 +358,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "notebook", specifier = ">=7.0.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pylabview", specifier = ">=0.1.2" },
     { name = "scipy", specifier = ">=1.15.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tensorboard", specifier = ">=2.21.0" },
@@ -1751,6 +1753,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da6b31b0021b0f37d329e202d4169aeb164493778f25b/pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c", size = 5005329, upload-time = "2026-08-17T08:02:48.824Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147, upload-time = "2026-08-17T08:02:44.912Z" },
+]
+
+[[package]]
+name = "pylabview"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pillow" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/2b/dcc738adad83d9f77a555f3c756388cfb0a442e350c2f44487f2f0e3178b/pylabview-0.1.2-py3-none-any.whl", hash = "sha256:6646e5fd645e5c20d80b2908b336b48b23a9f6ab7cfbbc1a809204771f9ac45a", size = 224400, upload-time = "2022-11-28T14:41:38.825Z" },
 ]
 
 [[package]]

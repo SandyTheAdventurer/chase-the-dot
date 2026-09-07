@@ -2,44 +2,27 @@ import numpy as np
 import torch
 from torch import nn
 from chase_the_dot.env import normalize
-from chase_the_dot.utils import mlp
+from chase_the_dot.utils import mlp, BaseRL, compute_gae
 
-class VPG(nn.Module):
-    def __init__(self, actor=(64, 64, 64), sde=False, lr=0.01, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size = 32):
+class VPG(BaseRL):
+    def __init__(self, actor=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32):
         super().__init__()
-
         self.sde = sde
-        if sde:
-            self.actor = mlp(7, actor, 4)
-        else:
-            self.actor = mlp(7, actor, 2)
+        self.actor = mlp(9, actor, 4 if sde else 2)
+        if not sde:
             self.log_std = nn.Parameter(torch.full((2,), -2.0))
-        self.gamma = gamma
-        self.inference = inference
-        self.entropy_coeff = entropy_coeff
-        self.batch_size = batch_size
-        self.ptr = 0
-        
-        self.logprob_buf = torch.zeros(batch_size, dtype=torch.float32)
-        self.entropy_buf = torch.zeros(batch_size, dtype=torch.float32)
-        self.reward_buf = torch.zeros(batch_size, dtype=torch.float32)
-
+        self.gamma, self.inference, self.entropy_coeff, self.batch_size = gamma, inference, entropy_coeff, batch_size
+        self._reset_buf()
         self.optim = torch.optim.Adam(self.parameters(), lr=lr, foreach=True)
 
-    def _returns(self, rewards):
-        returns = torch.zeros_like(rewards)
-        discounted_sum = 0
-        for i in reversed(range(len(rewards))):
-            discounted_sum = rewards[i] + self.gamma * discounted_sum
-            returns[i] = discounted_sum
-            
-        if len(returns) > 1:
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-        return returns
+    def _reset_buf(self):
+        self.ptr = 0
+        self.logprob_buf = torch.zeros(self.batch_size, dtype=torch.float32)
+        self.entropy_buf = torch.zeros(self.batch_size, dtype=torch.float32)
+        self.reward_buf = torch.zeros(self.batch_size, dtype=torch.float32)
 
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
-
         if self.sde:
             out = self.actor(feat)
             mean, log_std = out[..., :2], out[..., 2:]
@@ -48,52 +31,33 @@ class VPG(nn.Module):
             mean = self.actor(feat)
             std = torch.exp(self.log_std)
 
+        if self.inference:
+            return torch.tanh(mean).detach().cpu().numpy()
+
         dist = torch.distributions.Normal(mean, std)
-        action = dist.sample()
+        u = dist.sample()
+        action = torch.tanh(u)
 
-        if not self.inference:
-            log_prob = dist.log_prob(action).sum(dim=-1)
-            entropy = dist.entropy().sum(dim=-1)
-            
-            self.logprob_buf[self.ptr] = log_prob
-            self.entropy_buf[self.ptr] = entropy
-
-        return action.detach().numpy()
+        log_prob = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
+        self.logprob_buf[self.ptr] = log_prob.sum(dim=-1)
+        self.entropy_buf[self.ptr] = dist.entropy().sum(dim=-1)
+        return action.detach().cpu().numpy()
 
     def learn(self, reward):
-        if self.inference:
-            return 0.0
-            
+        if self.inference: return 0.0
         self.reward_buf[self.ptr] = reward
         self.ptr += 1
+        if self.ptr < self.batch_size: return 0.0
 
-        if self.ptr < self.batch_size:
-            return 0.0
-
-        log_probs = self.logprob_buf
-        entropies = self.entropy_buf
-        rewards = self.reward_buf
-
-        returns = self._returns(rewards)
-
-        actor_loss = -(returns * log_probs).mean()
-        entropy_loss = -self.entropy_coeff * entropies.mean()
-
-        loss = actor_loss + entropy_loss
+        returns = compute_gae(self.reward_buf, gamma=self.gamma, gae_lambda=1.0)
+        actor_loss = -(returns * self.logprob_buf).mean()
+        entropy = self.entropy_buf.mean()
+        loss = actor_loss - self.entropy_coeff * entropy
 
         self.optim.zero_grad()
         loss.backward()
         self.optim.step()
 
-        self.ptr = 0
-        return {
-            "loss": loss.item(),
-            "actor_loss": actor_loss.item(),
-            "entropy": entropies.mean().item()
-        }
-
-    def save(self, path):
-        torch.save(self.state_dict(), path)
-
-    def load(self, path):
-        self.load_state_dict(torch.load(path, weights_only=True))
+        metrics = {"loss": loss.item(), "actor_loss": actor_loss.item(), "entropy": entropy.item()}
+        self._reset_buf()
+        return metrics
