@@ -5,12 +5,17 @@ from chase_the_dot.env import normalize
 from chase_the_dot.utils import mlp, BaseRL, compute_gae
 
 class VPG(BaseRL):
-    def __init__(self, actor=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32):
+    def __init__(self, actor=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32, frame_stack=4, obs_dim=None):
         super().__init__()
+        self.algo_name = "vpg"
+        self.frame_stack = int(frame_stack)
+        self.obs_dim = 8 * self.frame_stack if obs_dim is None else int(obs_dim)
+        self.act_dim = 2
+
         self.sde = sde
-        self.actor = mlp(8, actor, 4 if sde else 2)
+        self.actor = mlp(self.obs_dim, actor, 4 if sde else self.act_dim)
         if not sde:
-            self.log_std = nn.Parameter(torch.full((2,), -2.0))
+            self.log_std = nn.Parameter(torch.full((self.act_dim,), -2.0))
         self.gamma, self.inference, self.entropy_coeff, self.batch_size = gamma, inference, entropy_coeff, batch_size
         self._reset_buf()
         self.optim = torch.optim.Adam(self.parameters(), lr=lr, foreach=True)

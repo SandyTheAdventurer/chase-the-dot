@@ -5,17 +5,22 @@ from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
 
 class SAC(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, alpha=0.01, batch_size=32, sde=False, inference=False):
+    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, alpha=0.01, batch_size=32, sde=False, inference=False, frame_stack=4, obs_dim=None):
         super().__init__()
-        self.sde = sde
-        self.actor = mlp(8, actor, 4 if sde else 2)
-        if not sde:
-            self.log_std = nn.Parameter(torch.full([2], -2.0))
+        self.algo_name = "sac"
+        self.frame_stack = int(frame_stack)
+        self.obs_dim = 8 * self.frame_stack if obs_dim is None else int(obs_dim)
+        self.act_dim = 2
 
-        self.critic1 = mlp(10, critic, 1)
-        self.critic2 = mlp(10, critic, 1)
-        self.target_critic1 = mlp(10, critic, 1)
-        self.target_critic2 = mlp(10, critic, 1)
+        self.sde = sde
+        self.actor = mlp(self.obs_dim, actor, 4 if sde else self.act_dim)
+        if not sde:
+            self.log_std = nn.Parameter(torch.full([self.act_dim], -2.0))
+
+        self.critic1 = mlp(self.obs_dim + self.act_dim, critic, 1)
+        self.critic2 = mlp(self.obs_dim + self.act_dim, critic, 1)
+        self.target_critic1 = mlp(self.obs_dim + self.act_dim, critic, 1)
+        self.target_critic2 = mlp(self.obs_dim + self.act_dim, critic, 1)
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 

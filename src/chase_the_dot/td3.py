@@ -4,14 +4,19 @@ from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
 
 class TD3(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, noise_std=0.1, noise_lmt=0.2, policy_delay=2, batch_size=32, inference=False):
+    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, noise_std=0.2, noise_lmt=0.5, policy_delay=2, batch_size=32, inference=False, frame_stack=4, obs_dim=None):
         super().__init__()
-        self.actor = mlp(8, actor, 2)
-        self.critic1 = mlp(10, critic, 1)
-        self.critic2 = mlp(10, critic, 1)
-        self.target_actor = mlp(8, actor, 2)
-        self.target_critic1 = mlp(10, critic, 1)
-        self.target_critic2 = mlp(10, critic, 1)
+        self.algo_name = "td3"
+        self.frame_stack = int(frame_stack)
+        self.obs_dim = 8 * self.frame_stack if obs_dim is None else int(obs_dim)
+        self.act_dim = 2
+
+        self.actor = mlp(self.obs_dim, actor, self.act_dim)
+        self.critic1 = mlp(self.obs_dim + self.act_dim, critic, 1)
+        self.critic2 = mlp(self.obs_dim + self.act_dim, critic, 1)
+        self.target_actor = mlp(self.obs_dim, actor, self.act_dim)
+        self.target_critic1 = mlp(self.obs_dim + self.act_dim, critic, 1)
+        self.target_critic2 = mlp(self.obs_dim + self.act_dim, critic, 1)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
@@ -40,7 +45,7 @@ class TD3(BaseRL):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         action = torch.tanh(self.actor(feat))
         if not self.inference:
-            action = torch.clamp(action + torch.normal(0, 0.1, size=action.shape), -1.0, 1.0)
+            action = torch.clamp(action + torch.normal(0, 0.25, size=action.shape), -1.0, 1.0)
         self.buffer.store_step(feat, action, self.inference)
         return action.detach().cpu().numpy()
 

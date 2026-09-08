@@ -19,9 +19,9 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     parser.add_argument("--timesteps", type=int, default=100000, help="Number of timesteps to run (default: 100,000)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Target TCP host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=6102, help="Target TCP port (default: 6102)")
-    parser.add_argument("--kp", type=float, default=None, help="Proportional gain (PID, default: 0.10)")
-    parser.add_argument("--ki", type=float, default=None, help="Integral gain (PID, default: 0.00)")
-    parser.add_argument("--kd", type=float, default=None, help="Derivative gain (PID, default: 0.00)")
+    parser.add_argument("--kp", type=float, default=None, help="Proportional gain (PID, default: 0.40)")
+    parser.add_argument("--ki", type=float, default=None, help="Integral gain (PID, default: 0.02)")
+    parser.add_argument("--kd", type=float, default=None, help="Derivative gain (PID, default: 0.10)")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--entropy-coeff", type=float, default=0.01, help="Entropy coefficient (VPG)")
@@ -39,9 +39,11 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
                         help="Timesteps between curriculum domain re-sampling (default: 5,000)")
     parser.add_argument("--curriculum-hard-ratio", type=float, default=0.5,
                         help="Probability of sampling the hardest frontier vs random within expanded domain (default: 0.5)")
+    parser.add_argument("--oob-penalty", type=float, default=1.0, help="Out-of-bounds base penalty per error flag (default: 1.0)")
     parser.add_argument("--eval", action="store_true", help="Run in evaluation/inference mode (deterministic, no exploration noise)")
     parser.add_argument("--model-path", type=str, default=None, help="Path to checkpoint for evaluation (default: models/{algo}_latest.pt)")
-    parser.add_argument("--action-scale", type=float, default=20.0, help="Residual action authority scale in pixels (default: 20.0)")
+    parser.add_argument("--frame-stack", type=int, default=4, help="Number of consecutive observation frames to stack (default: 4)")
+    parser.add_argument("--action-scale", type=float, default=30.0, help="Residual action authority scale in pixels (default: 30.0)")
     parser.add_argument("--seed", type=int, default=42, help="Global random seed (default: 42)")
     args = parser.parse_args(args_list)
 
@@ -53,7 +55,7 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
         print(f"Set global seed to {args.seed}")
 
     print(f"Connecting to Chase the Dot application at {args.host}:{args.port}...")
-    env = ChaseTheDotEnv(host=args.host, port=args.port, action_scale=args.action_scale)
+    env = ChaseTheDotEnv(host=args.host, port=args.port, action_scale=args.action_scale, oob_penalty=args.oob_penalty, frame_stack=args.frame_stack)
 
     try:
         env.connect()
@@ -63,11 +65,11 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
 
     curriculum_steps = args.curriculum_steps if args.curriculum_steps is not None else max(1, int(0.7 * args.timesteps))
     alpha = 0.0
-    speed_min, size_min = 500, 70.0
+    speed_min, size_min = 500, 100.0
 
     if args.domain_expansion and not args.eval:
         current_speed = args.speed if args.speed is not None else 500
-        current_size = args.size if args.size is not None else 70.0
+        current_size = args.size if args.size is not None else 100.0
         print(f"Domain Expansion active: starting at easiest config (Speed={current_speed}, Size={current_size}%), expanding over {curriculum_steps} steps (hard_ratio={args.curriculum_hard_ratio})")
     else:
         current_speed = args.speed if args.speed is not None else 300
@@ -76,11 +78,11 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     print(f"Sending configuration: Speed={current_speed}, Size={current_size}%")
     env.configure(speed=current_speed, size=current_size)
 
-    shared = dict(lr=args.lr, gamma=args.gamma, inference=args.eval)
+    shared = dict(lr=args.lr, gamma=args.gamma, inference=args.eval, frame_stack=args.frame_stack)
     on_policy = dict(batch_size=args.rollout_steps, entropy_coeff=args.entropy_coeff, **shared)
     off_policy = dict(batch_size=args.batch_size, **shared)
     algo_factories = {
-        "pid": lambda: PID(kp=args.kp, ki=args.ki, kd=args.kd),
+        "pid": lambda: PID(kp=args.kp, ki=args.ki, kd=args.kd, action_scale=args.action_scale),
         "vpg": lambda: VPG(**on_policy),
         "a2c": lambda: A2C(**on_policy),
         "ppo": lambda: PPO(**on_policy),
@@ -92,7 +94,7 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     if args.algo == "pid":
         print(f"Initializing PID Policy (kp={policy.kpx}, ki={policy.kix}, kd={policy.kdx})")
     else:
-        print(f"Initializing {args.algo.upper()} Policy")
+        print(f"Initializing {args.algo.upper()} Policy (frame_stack={args.frame_stack}, obs_dim={policy.obs_dim})")
         if args.eval:
             model_path = args.model_path or os.path.join("models", f"{args.algo}_latest.pt")
             if os.path.exists(model_path):
@@ -117,13 +119,12 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
 
     pbar = None
     try:
-        state = env.receive_state(wait_for_new=True)
+        obs, info = env.reset()
         pbar = tqdm(total=args.timesteps, desc=f"{action_label} {args.algo.upper()}", unit="step")
 
         while step_idx < args.timesteps:
-            action = policy(state)
+            action = policy(obs)
             obs, reward, terminated, truncated, info = env.step(action)
-            state = info["state"]
             step_idx += 1
 
             dist, in_b = info["distance"], int(info["in_bounds"])
@@ -147,7 +148,7 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
             if args.domain_expansion and not args.eval:
                 alpha = min(1.0, step_idx / float(curriculum_steps))
                 speed_min = int(500 - alpha * (500 - 100))
-                size_min = round(70.0 - alpha * (70.0 - 10.0), 1)
+                size_min = round(100.0 - alpha * (100.0 - 10.0), 1)
 
                 if step_idx % args.curriculum_interval == 0:
                     if random.random() < args.curriculum_hard_ratio:
@@ -156,10 +157,10 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
                         mode_str = "Hard Frontier"
                     else:
                         current_speed = random.randint(speed_min, 500)
-                        current_size = round(random.uniform(size_min, 70.0), 1)
+                        current_size = round(random.uniform(size_min, 100.0), 1)
                         mode_str = "Generalization"
                     env.configure(speed=current_speed, size=current_size)
-                    tqdm.write(f"[{step_idx}/{args.timesteps}] Domain Expansion (alpha={alpha:.2f}, {mode_str}) -> Speed={current_speed}, Size={current_size}% | Unlocked: Speed in [{speed_min}, 500], Size in [{size_min:.1f}, 70.0]")
+                    tqdm.write(f"[{step_idx}/{args.timesteps}] Domain Expansion (alpha={alpha:.2f}, {mode_str}) -> Speed={current_speed}, Size={current_size}% | Unlocked: Speed in [{speed_min}, 500], Size in [{size_min:.1f}, 100.0]")
             elif args.randomize_config and step_idx % args.randomize_interval == 0:
                 current_speed, current_size = random.randint(100, 500), random.uniform(10.0, 100.0)
                 env.configure(speed=current_speed, size=current_size)
