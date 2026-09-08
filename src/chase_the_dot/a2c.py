@@ -8,10 +8,10 @@ class A2C(BaseRL):
     def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32):
         super().__init__()
         self.sde = sde
-        self.actor = mlp(9, actor, 4 if sde else 2)
+        self.actor = mlp(8, actor, 4 if sde else 2)
         if not sde:
             self.log_std = nn.Parameter(torch.full((2,), -2.0))
-        self.critic = mlp(9, critic, 1)
+        self.critic = mlp(8, critic, 1)
         self.gamma, self.inference, self.entropy_coeff, self.batch_size = gamma, inference, entropy_coeff, batch_size
         self._reset_buf()
         self.optim = torch.optim.Adam(self.parameters(), lr=lr, foreach=True)

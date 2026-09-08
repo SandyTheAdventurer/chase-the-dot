@@ -25,12 +25,20 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--entropy-coeff", type=float, default=0.01, help="Entropy coefficient (VPG)")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size for off-policy updates (Default: 64)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for off-policy updates (Default: 32)")
     parser.add_argument("--rollout-steps", type=int, default=256, help="Rollout length for on-policy algorithms (Default: 256)")
     parser.add_argument("--speed", type=int, default=None, help="Configure object speed (100-500)")
     parser.add_argument("--size", type=float, default=None, help="Configure object size (10-100)")
     parser.add_argument("--randomize-config", action="store_true", help="Randomize environment speed and size periodically")
     parser.add_argument("--randomize-interval", type=int, default=20000, help="Timesteps between environment domain randomizations (default: 20,000)")
+    parser.add_argument("--domain-expansion", "--curriculum", action="store_true", dest="domain_expansion",
+                        help="Enable Domain Expansion curriculum learning (anneals from easiest domain to hardest frontier while expanding the generalization distribution)")
+    parser.add_argument("--curriculum-steps", type=int, default=None,
+                        help="Timesteps over which to expand the domain (default: 70%% of total timesteps)")
+    parser.add_argument("--curriculum-interval", type=int, default=5000,
+                        help="Timesteps between curriculum domain re-sampling (default: 5,000)")
+    parser.add_argument("--curriculum-hard-ratio", type=float, default=0.5,
+                        help="Probability of sampling the hardest frontier vs random within expanded domain (default: 0.5)")
     parser.add_argument("--eval", action="store_true", help="Run in evaluation/inference mode (deterministic, no exploration noise)")
     parser.add_argument("--model-path", type=str, default=None, help="Path to checkpoint for evaluation (default: models/{algo}_latest.pt)")
     parser.add_argument("--action-scale", type=float, default=20.0, help="Residual action authority scale in pixels (default: 20.0)")
@@ -53,8 +61,18 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     except Exception as exc:
         print(f"Connection failed: {exc}", file=sys.stderr); sys.exit(1)
 
-    current_speed = args.speed if args.speed is not None else 300
-    current_size = args.size if args.size is not None else 50.0
+    curriculum_steps = args.curriculum_steps if args.curriculum_steps is not None else max(1, int(0.7 * args.timesteps))
+    alpha = 0.0
+    speed_min, size_min = 500, 70.0
+
+    if args.domain_expansion and not args.eval:
+        current_speed = args.speed if args.speed is not None else 500
+        current_size = args.size if args.size is not None else 70.0
+        print(f"Domain Expansion active: starting at easiest config (Speed={current_speed}, Size={current_size}%), expanding over {curriculum_steps} steps (hard_ratio={args.curriculum_hard_ratio})")
+    else:
+        current_speed = args.speed if args.speed is not None else 300
+        current_size = args.size if args.size is not None else 50.0
+
     print(f"Sending configuration: Speed={current_speed}, Size={current_size}%")
     env.configure(speed=current_speed, size=current_size)
 
@@ -89,7 +107,7 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     log_interval = args.rollout_steps if args.algo in ["a2c", "ppo", "vpg"] else args.batch_size
     writer = None if args.eval else SummaryWriter(log_dir=f"runs/{args.algo}")
     loss, step_idx = 0.0, 0
-    batch_reward = batch_distance = batch_dt = batch_in_bounds = 0.0
+    batch_reward = batch_distance = batch_in_bounds = 0.0
     tot_reward = tot_distance = tot_in_bounds = 0.0
 
     def save_checkpoint():
@@ -108,10 +126,9 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
             state = info["state"]
             step_idx += 1
 
-            dist, in_b, dt = info["distance"], int(info["in_bounds"]), info["dt"]
+            dist, in_b = info["distance"], int(info["in_bounds"])
             batch_reward += reward
             batch_distance += dist
-            batch_dt += dt
             batch_in_bounds += in_b
 
             if args.eval:
@@ -127,25 +144,57 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
                 elif step_out != 0.0:
                     loss = step_out
 
-            if args.randomize_config and step_idx % args.randomize_interval == 0:
+            if args.domain_expansion and not args.eval:
+                alpha = min(1.0, step_idx / float(curriculum_steps))
+                speed_min = int(500 - alpha * (500 - 100))
+                size_min = round(70.0 - alpha * (70.0 - 10.0), 1)
+
+                if step_idx % args.curriculum_interval == 0:
+                    if random.random() < args.curriculum_hard_ratio:
+                        current_speed = speed_min
+                        current_size = size_min
+                        mode_str = "Hard Frontier"
+                    else:
+                        current_speed = random.randint(speed_min, 500)
+                        current_size = round(random.uniform(size_min, 70.0), 1)
+                        mode_str = "Generalization"
+                    env.configure(speed=current_speed, size=current_size)
+                    tqdm.write(f"[{step_idx}/{args.timesteps}] Domain Expansion (alpha={alpha:.2f}, {mode_str}) -> Speed={current_speed}, Size={current_size}% | Unlocked: Speed in [{speed_min}, 500], Size in [{size_min:.1f}, 70.0]")
+            elif args.randomize_config and step_idx % args.randomize_interval == 0:
                 current_speed, current_size = random.randint(100, 500), random.uniform(10.0, 100.0)
                 env.configure(speed=current_speed, size=current_size)
 
             if step_idx % log_interval == 0:
-                avg_r, avg_d, avg_dt = batch_reward / log_interval, batch_distance / log_interval, batch_dt / log_interval
+                avg_r, avg_d = batch_reward / log_interval, batch_distance / log_interval
                 in_b_pct = (batch_in_bounds / log_interval) * 100.0
 
                 if writer:
-                    for k, v in [("Metrics/Reward", avg_r), ("Metrics/Loss", loss), ("Metrics/Distance", avg_d),
-                                 ("Metrics/In_Bounds_Percent", in_b_pct), ("Env/Speed", current_speed), ("Env/Size", current_size)]:
+                    scalars = [
+                        ("Metrics/Reward", avg_r),
+                        ("Metrics/Loss", loss),
+                        ("Metrics/Distance", avg_d),
+                        ("Metrics/In_Bounds_Percent", in_b_pct),
+                        ("Env/Speed", current_speed),
+                        ("Env/Size", current_size),
+                    ]
+                    if args.domain_expansion and not args.eval:
+                        scalars.extend([
+                            ("Curriculum/Alpha", alpha),
+                            ("Curriculum/Speed_Min", speed_min),
+                            ("Curriculum/Size_Min", size_min),
+                        ])
+                    for k, v in scalars:
                         writer.add_scalar(k, v, step_idx)
 
-                postfix = dict(dist=f"{avg_d:.1f}", in_bounds=f"{in_b_pct:.0f}%", reward=f"{avg_r:.2f}", dt=f"{avg_dt:.3f}s")
-                if not args.eval: postfix["loss"] = f"{loss:.2f}"
+                postfix = dict(dist=f"{avg_d:.1f}", in_bounds=f"{in_b_pct:.0f}%", reward=f"{avg_r:.2f}")
+                if args.domain_expansion and not args.eval:
+                    postfix["cfg"] = f"sp:{current_speed}|sz:{current_size:.0f}"
+                if not args.eval:
+                    postfix["loss"] = f"{loss:.2f}"
                 pbar.set_postfix(**postfix)
                 if step_idx % (log_interval * 10) == 0 or step_idx == args.timesteps:
                     save_checkpoint()
-                batch_reward = batch_distance = batch_dt = batch_in_bounds = 0.0
+                batch_reward = batch_distance = batch_in_bounds = 0.0
 
             pbar.update(1)
 

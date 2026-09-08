@@ -88,7 +88,16 @@ uv run chase-the-dot --algo td3 --timesteps 200000
 uv run chase-the-dot --algo ppo --timesteps 200000
 ```
 
-### 3.2 Evaluation Mode (`--eval`)
+### 3.2 Curriculum Learning with Domain Expansion (`--domain-expansion`)
+Train an agent that masters the hardest configuration (`speed=100`, `size=10.0`) while maintaining generalization across the entire spectrum:
+```bash
+uv run chase-the-dot --algo sac --timesteps 200000 --domain-expansion
+uv run chase-the-dot --algo td3 --timesteps 200000 --domain-expansion
+```
+- **Domain Expansion Schedule**: Starts at the easiest domain (`speed=500`, `size=70.0`) and gradually unlocks harder speeds and smaller target sizes (down to `speed=100`, `size=10.0`) over the first 70% of timesteps (customizable via `--curriculum-steps`).
+- **Mastery + Generalization Mix**: Every interval (`--curriculum-interval 5000`), samples with 50% probability (`--curriculum-hard-ratio 0.5`) directly at the hardest unlocked frontier, and 50% uniformly across the full unlocked domain to prevent catastrophic forgetting.
+
+### 3.3 Evaluation Mode (`--eval`)
 Run any trained checkpoint deterministically (disables exploration noise and learning updates):
 ```bash
 uv run chase-the-dot --algo sac --eval --timesteps 2000

@@ -6,10 +6,10 @@ from chase_the_dot.env import normalize
 class DDPG(BaseRL):
     def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, entropy_coeff=0.01, batch_size=32, inference=False):
         super().__init__()
-        self.actor = mlp(9, actor, 2)
-        self.critic = mlp(11, critic, 1)
-        self.target_actor = mlp(9, actor, 2)
-        self.target_critic = mlp(11, critic, 1)
+        self.actor = mlp(8, actor, 2)
+        self.critic = mlp(10, critic, 1)
+        self.target_actor = mlp(8, actor, 2)
+        self.target_critic = mlp(10, critic, 1)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic.load_state_dict(self.critic.state_dict())
 

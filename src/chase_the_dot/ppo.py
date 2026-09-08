@@ -8,10 +8,10 @@ class PPO(BaseRL):
     def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, clip_ratio=0.2, ppo_epochs=3, inference=False, batch_size=32):
         super().__init__()
         self.sde = sde
-        self.actor = mlp(9, actor, 4 if sde else 2)
+        self.actor = mlp(8, actor, 4 if sde else 2)
         if not sde:
             self.log_std = nn.Parameter(torch.full((2,), -2.0))
-        self.critic = mlp(9, critic, 1)
+        self.critic = mlp(8, critic, 1)
         self.gamma, self.inference, self.entropy_coeff = gamma, inference, entropy_coeff
         self.clip_ratio, self.ppo_epochs, self.batch_size = clip_ratio, ppo_epochs, batch_size
         self._reset_buf()
@@ -19,7 +19,7 @@ class PPO(BaseRL):
 
     def _reset_buf(self):
         self.ptr = 0
-        self.state_buf = torch.zeros((self.batch_size, 9), dtype=torch.float32)
+        self.state_buf = torch.zeros((self.batch_size, 8), dtype=torch.float32)
         self.action_buf = torch.zeros((self.batch_size, 2), dtype=torch.float32)
         self.logprob_buf = torch.zeros(self.batch_size, dtype=torch.float32)
         self.value_buf = torch.zeros(self.batch_size, dtype=torch.float32)

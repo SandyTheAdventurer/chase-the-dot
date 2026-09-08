@@ -13,7 +13,7 @@ class PID:
     def forward(self, X):
         if X is None: return None
         err = np.array([X[2], X[3]], dtype=np.float32)
-        dt = max(float(X[4]) if len(X) == 9 else (float(X[6]) if len(X) > 6 else 0.016), 1e-4)
+        dt = max(float(X[4]) if len(X) == 9 else (float(X[6]) if len(X) == 11 else 0.016), 1e-4)
         self.integral = np.clip(self.integral + err * dt, -100.0, 100.0)
         d_err = (err - self.prev_err) if self.prev_err is not None else np.zeros(2, dtype=np.float32)
         self.prev_err = err

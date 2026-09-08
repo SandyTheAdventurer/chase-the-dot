@@ -6,12 +6,12 @@ from chase_the_dot.env import normalize
 class TD3(BaseRL):
     def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, noise_std=0.1, noise_lmt=0.2, policy_delay=2, batch_size=32, inference=False):
         super().__init__()
-        self.actor = mlp(9, actor, 2)
-        self.critic1 = mlp(11, critic, 1)
-        self.critic2 = mlp(11, critic, 1)
-        self.target_actor = mlp(9, actor, 2)
-        self.target_critic1 = mlp(11, critic, 1)
-        self.target_critic2 = mlp(11, critic, 1)
+        self.actor = mlp(8, actor, 2)
+        self.critic1 = mlp(10, critic, 1)
+        self.critic2 = mlp(10, critic, 1)
+        self.target_actor = mlp(8, actor, 2)
+        self.target_critic1 = mlp(10, critic, 1)
+        self.target_critic2 = mlp(10, critic, 1)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())

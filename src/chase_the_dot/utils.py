@@ -14,7 +14,19 @@ def mlp(in_dim, hidden_sizes, out_dim, activation=nn.ReLU):
 class BaseRL(nn.Module):
     """Base module providing standardized checkpoint save and load."""
     def save(self, path: str): torch.save(self.state_dict(), path)
-    def load(self, path: str): self.load_state_dict(torch.load(path, weights_only=True))
+    def load(self, path: str):
+        state = torch.load(path, weights_only=True)
+        cur = self.state_dict()
+        adapted = {}
+        for k, v in state.items():
+            if k in cur and v.shape != cur[k].shape:
+                if v.ndim == 2 and cur[k].ndim == 2 and v.shape[0] == cur[k].shape[0]:
+                    if v.shape[1] == 9 and cur[k].shape[1] == 8:
+                        v = torch.cat([v[:, :4], v[:, 5:]], dim=1)
+                    elif v.shape[1] == 11 and cur[k].shape[1] == 10:
+                        v = torch.cat([v[:, :4], v[:, 5:]], dim=1)
+            adapted[k] = v
+        self.load_state_dict(adapted)
 
 def compute_gae(rewards, values=None, gamma=0.99, gae_lambda=0.95):
     """Compute Generalized Advantage Estimation (GAE) or discounted returns."""

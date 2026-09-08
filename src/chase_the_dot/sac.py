@@ -8,14 +8,14 @@ class SAC(BaseRL):
     def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, alpha=0.01, batch_size=32, sde=False, inference=False):
         super().__init__()
         self.sde = sde
-        self.actor = mlp(9, actor, 4 if sde else 2)
+        self.actor = mlp(8, actor, 4 if sde else 2)
         if not sde:
             self.log_std = nn.Parameter(torch.full([2], -2.0))
 
-        self.critic1 = mlp(11, critic, 1)
-        self.critic2 = mlp(11, critic, 1)
-        self.target_critic1 = mlp(11, critic, 1)
-        self.target_critic2 = mlp(11, critic, 1)
+        self.critic1 = mlp(10, critic, 1)
+        self.critic2 = mlp(10, critic, 1)
+        self.target_critic1 = mlp(10, critic, 1)
+        self.target_critic2 = mlp(10, critic, 1)
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
 
