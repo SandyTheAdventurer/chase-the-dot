@@ -1,4 +1,3 @@
-from line_profiler import profile
 import numpy as np
 
 class PID:
@@ -24,7 +23,6 @@ class PID:
     def __call__(self, X, env=None):
         return self.forward(X, env)
 
-    @profile
     def forward(self, X, env=None):
         if X is None:
             return None

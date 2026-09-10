@@ -1,5 +1,4 @@
 import torch
-from line_profiler import profile
 from torch import nn
 import numpy as np
 from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
@@ -45,7 +44,6 @@ class SAC(BaseRL):
         self.target_critic2_params = list(self.target_critic2.parameters())
         self.critic2_params = list(self.critic2.parameters())
 
-    @profile
     def sample(self, feat):
         if not self.sde:
             mu = self.actor(feat)
@@ -61,7 +59,6 @@ class SAC(BaseRL):
         log_probs = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
         return action, log_probs.sum(dim=-1, keepdim=True)
 
-    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         with torch.no_grad():
@@ -72,9 +69,8 @@ class SAC(BaseRL):
                 action, _ = self.sample(feat)
 
         self.buffer.store_step(feat, action, self.inference)
-        return action.detach().cpu().numpy()
+        return action.cpu().numpy()
 
-    @profile
     def learn(self, reward):
         if self.inference: return 0.0
         self.buffer.store_reward(reward)
@@ -88,19 +84,21 @@ class SAC(BaseRL):
             q2_next = self.target_critic2(torch.cat([next_obs, next_action], dim=1))
             target_q = rewards + self.gamma * (torch.min(q1_next, q2_next) - self.alpha * next_log_probs)
 
-        q1 = self.critic1(torch.cat([obs, actions], dim=1))
-        q2 = self.critic2(torch.cat([obs, actions], dim=1))
+        obs_act = torch.cat([obs, actions], dim=1)
+        q1 = self.critic1(obs_act)
+        q2 = self.critic2(obs_act)
         critic_loss = nn.functional.mse_loss(q1, target_q) + nn.functional.mse_loss(q2, target_q)
 
         self.critic_optim.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(list(self.critic1.parameters()) + list(self.critic2.parameters()), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic1_params + self.critic2_params, max_norm=1.0)
         self.critic_optim.step()
 
         # Update Actor
         action, log_probs = self.sample(obs)
-        q1_actor = self.critic1(torch.cat([obs, action], dim=1))
-        q2_actor = self.critic2(torch.cat([obs, action], dim=1))
+        obs_act2 = torch.cat([obs, action], dim=1)
+        q1_actor = self.critic1(obs_act2)
+        q2_actor = self.critic2(obs_act2)
         alpha = self.log_alpha.exp().detach()
         actor_loss = (alpha * log_probs - torch.min(q1_actor, q2_actor)).mean()
 

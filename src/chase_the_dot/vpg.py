@@ -28,25 +28,26 @@ class VPG(BaseRL):
 
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
-        if self.sde:
-            out = self.actor(feat)
-            mean, log_std = out[..., :2], out[..., 2:]
-            std = torch.exp(torch.clamp(log_std, -20, 2))
-        else:
-            mean = self.actor(feat)
-            std = torch.exp(self.log_std)
+        with torch.no_grad():
+            if self.sde:
+                out = self.actor(feat)
+                mean, log_std = out[..., :2], out[..., 2:]
+                std = torch.exp(torch.clamp(log_std, -20, 2))
+            else:
+                mean = self.actor(feat)
+                std = torch.exp(self.log_std)
 
-        if self.inference:
-            return torch.tanh(mean).detach().cpu().numpy()
+            if self.inference:
+                return torch.tanh(mean).cpu().numpy()
 
-        dist = torch.distributions.Normal(mean, std)
-        u = dist.sample()
-        action = torch.tanh(u)
+            dist = torch.distributions.Normal(mean, std)
+            u = dist.sample()
+            action = torch.tanh(u)
 
-        log_prob = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
-        self.logprobs.append(log_prob.sum(dim=-1))
-        self.entropies.append(dist.entropy().sum(dim=-1))
-        return action.detach().cpu().numpy()
+            log_prob = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
+            self.logprobs.append(log_prob.sum(dim=-1))
+            self.entropies.append(dist.entropy().sum(dim=-1))
+        return action.cpu().numpy()
 
     def learn(self, reward):
         if self.inference: return 0.0

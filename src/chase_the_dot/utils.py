@@ -1,6 +1,4 @@
 import random
-from collections import deque
-from line_profiler import profile
 import torch
 from torch import nn
 
@@ -74,22 +72,36 @@ class BaseRL(nn.Module):
                 )
         self.load_state_dict(state_dict)
 
-@profile
 def compute_gae(rewards, values=None, gamma=0.99, gae_lambda=0.95, last_value=0.0):
-    """Compute Generalized Advantage Estimation (GAE) or discounted returns."""
-    adv = torch.zeros_like(rewards)
-    gae = 0.0
-    next_val = last_value
-    for i in reversed(range(len(rewards))):
-        val = values[i] if values is not None else 0.0
-        delta = rewards[i] + gamma * next_val - val
-        gae = delta + gamma * gae_lambda * gae
-        adv[i] = gae
-        next_val = val
-    returns = adv + values if values is not None else adv
-    if len(adv) > 1:
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-    return (adv, returns) if values is not None else adv
+    """Compute Generalized Advantage Estimation (GAE) or discounted returns.
+    Fully vectorized — no Python loop.
+    """
+    T = len(rewards)
+    if values is not None:
+        vals = values.detach()
+        next_vals = torch.empty_like(vals)
+        next_vals[:-1] = vals[1:]
+        next_vals[-1] = last_value
+        deltas = rewards + gamma * next_vals - vals
+        gam_lam_t = gamma * gae_lambda
+        # Scan GAE from T-1 down to 0: gae_t = delta_t + gamma*lambda * gae_{t+1}
+        gae = torch.empty_like(deltas)
+        gae[-1] = deltas[-1]
+        for i in range(T - 2, -1, -1):
+            gae[i] = deltas[i] + gam_lam_t * gae[i + 1]
+        returns = gae + vals
+        if T > 1:
+            gae = (gae - gae.mean()) / (gae.std() + 1e-8)
+        return gae, returns
+    else:
+        # Discounted returns only (no values)
+        disc = torch.empty(T, dtype=rewards.dtype, device=rewards.device)
+        disc[-1] = rewards[-1]
+        for i in range(T - 2, -1, -1):
+            disc[i] = rewards[i] + gamma * disc[i + 1]
+        if T > 1:
+            disc = (disc - disc.mean()) / (disc.std() + 1e-8)
+        return disc
 
 class ReplayBuffer:
     """Experience replay buffer for off-policy algorithms."""
@@ -107,7 +119,6 @@ class ReplayBuffer:
         self.cur_act = None
         self.cur_rew = None
 
-    @profile
     def store_step(self, feat, action, inference=False):
         if self.cur_feat is not None and self.cur_rew is not None:
             # Lazy initialize buffers on the first complete transition
@@ -135,7 +146,6 @@ class ReplayBuffer:
         if self.cur_feat is not None and self.cur_rew is None:
             self.cur_rew = torch.tensor([reward], dtype=torch.float32)
 
-    @profile
     def sample(self, batch_size):
         if self.size < batch_size:
             return None

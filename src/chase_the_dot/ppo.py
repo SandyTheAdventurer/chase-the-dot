@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from line_profiler import profile
 from torch import nn
 from chase_the_dot.env import normalize
 from chase_the_dot.utils import mlp, BaseRL, compute_gae
@@ -31,7 +30,6 @@ class PPO(BaseRL):
         self.value_buf = torch.zeros(self.batch_size, dtype=torch.float32)
         self.reward_buf = torch.zeros(self.batch_size, dtype=torch.float32)
 
-    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         with torch.no_grad():
@@ -45,7 +43,7 @@ class PPO(BaseRL):
 
             if self.inference:
                 action = torch.tanh(mean)
-                return action.detach().cpu().numpy()
+                return action.cpu().numpy()
 
             dist = torch.distributions.Normal(mean, std)
             u = dist.sample()
@@ -56,9 +54,8 @@ class PPO(BaseRL):
             self.action_buf[self.ptr] = u
             self.logprob_buf[self.ptr] = log_prob.sum(dim=-1)
             self.value_buf[self.ptr] = self.critic(feat).squeeze(-1)
-        return action.detach().cpu().numpy()
+        return action.cpu().numpy()
 
-    @profile
     def learn(self, reward):
         if self.inference: return 0.0
         self.reward_buf[self.ptr] = reward
@@ -69,6 +66,10 @@ class PPO(BaseRL):
         advantages, returns = compute_gae(self.reward_buf, self.value_buf.detach(), gamma=self.gamma, last_value=last_val)
         states, actions, old_log_probs = self.state_buf, self.action_buf, self.logprob_buf.detach()
 
+        # Pre-compute tanh(actions) once — it doesn't change across epochs
+        tanh_actions = torch.tanh(actions)
+        log_1_minus_tanh2 = torch.log(1 - tanh_actions.pow(2) + 1e-6)
+
         for _ in range(self.ppo_epochs):
             if self.sde:
                 out = self.actor(states)
@@ -78,7 +79,7 @@ class PPO(BaseRL):
                 mean, std = self.actor(states), torch.exp(self.log_std)
 
             dist = torch.distributions.Normal(mean, std)
-            new_log_probs = dist.log_prob(actions) - torch.log(1 - torch.tanh(actions).pow(2) + 1e-6)
+            new_log_probs = dist.log_prob(actions) - log_1_minus_tanh2
             new_log_probs = new_log_probs.sum(dim=-1)
             entropies = dist.entropy().sum(dim=-1)
 

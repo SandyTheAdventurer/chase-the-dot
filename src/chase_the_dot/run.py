@@ -52,7 +52,7 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
         random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.seed)
-            torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
+            torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = False, True
         print(f"Set global seed to {args.seed}")
 
     print(f"Connecting to Chase the Dot application at {args.host}:{args.port}...")

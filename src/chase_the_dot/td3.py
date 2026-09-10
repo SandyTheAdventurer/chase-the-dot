@@ -1,5 +1,4 @@
 import torch
-from line_profiler import profile
 from torch import nn
 from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
@@ -48,16 +47,15 @@ class TD3(BaseRL):
         noise = torch.clamp(torch.normal(0, self.noise_std, size=actions.shape), -self.noise_lmt, self.noise_lmt)
         return torch.clamp(actions + noise, -1.0, 1.0)
 
-    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
-        action = torch.tanh(self.actor(feat))
-        if not self.inference:
-            action = torch.clamp(action + torch.normal(0, 0.25, size=action.shape), -1.0, 1.0)
+        with torch.no_grad():
+            action = torch.tanh(self.actor(feat))
+            if not self.inference:
+                action = torch.clamp(action + torch.normal(0, 0.25, size=action.shape), -1.0, 1.0)
         self.buffer.store_step(feat, action, self.inference)
-        return action.detach().cpu().numpy()
+        return action.cpu().numpy()
 
-    @profile
     def learn(self, reward):
         if self.inference: return 0.0
         self.buffer.store_reward(reward)
@@ -71,13 +69,14 @@ class TD3(BaseRL):
             q2_next = self.target_critic2(torch.cat([next_obs, next_action], dim=1))
             target_q = rewards + self.gamma * torch.min(q1_next, q2_next)
 
-        q1 = self.critic1(torch.cat([obs, actions], dim=1))
-        q2 = self.critic2(torch.cat([obs, actions], dim=1))
+        obs_act = torch.cat([obs, actions], dim=1)
+        q1 = self.critic1(obs_act)
+        q2 = self.critic2(obs_act)
         critic_loss = nn.functional.mse_loss(q1, target_q) + nn.functional.mse_loss(q2, target_q)
 
         self.critic_optim.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(list(self.critic1.parameters()) + list(self.critic2.parameters()), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic1_params + self.critic2_params, max_norm=1.0)
         self.critic_optim.step()
 
         if self.steps % self.policy_delay == 0:
@@ -85,7 +84,7 @@ class TD3(BaseRL):
             actor_loss = -q.mean()
             self.actor_optim.zero_grad()
             actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.actor_params, max_norm=1.0)
             self.actor_optim.step()
             self.last_actor_loss = actor_loss.item()
 

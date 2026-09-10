@@ -35,11 +35,12 @@ class DDPG(BaseRL):
 
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
-        action = torch.tanh(self.actor(feat))
-        if not self.inference:
-            action = torch.clamp(action + torch.normal(0, 0.1, size=action.shape), -1.0, 1.0)
+        with torch.no_grad():
+            action = torch.tanh(self.actor(feat))
+            if not self.inference:
+                action = torch.clamp(action + torch.normal(0, 0.1, size=action.shape), -1.0, 1.0)
         self.buffer.store_step(feat, action, self.inference)
-        return action.detach().cpu().numpy()
+        return action.cpu().numpy()
 
     def learn(self, reward):
         if self.inference: return 0.0
@@ -52,17 +53,18 @@ class DDPG(BaseRL):
             next_action = torch.tanh(self.target_actor(next_obs))
             target_q = rewards + self.gamma * self.target_critic(torch.cat([next_obs, next_action], dim=1))
 
-        q = self.critic(torch.cat([obs, actions], dim=1))
+        obs_act = torch.cat([obs, actions], dim=1)
+        q = self.critic(obs_act)
         critic_loss = nn.functional.mse_loss(q, target_q)
         self.critic_optim.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=1.0)
         self.critic_optim.step()
 
         actor_loss = -self.critic(torch.cat([obs, torch.tanh(self.actor(obs))], dim=1)).mean()
         self.actor_optim.zero_grad()
         actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.actor_params, max_norm=1.0)
         self.actor_optim.step()
 
         with torch.no_grad():
