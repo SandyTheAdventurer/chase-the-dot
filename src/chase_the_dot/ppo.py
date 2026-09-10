@@ -1,11 +1,12 @@
 import numpy as np
 import torch
+from line_profiler import profile
 from torch import nn
 from chase_the_dot.env import normalize
 from chase_the_dot.utils import mlp, BaseRL, compute_gae
 
 class PPO(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, clip_ratio=0.2, ppo_epochs=3, inference=False, batch_size=32, frame_stack=4, obs_dim=None):
+    def __init__(self, actor=(128, 128, 128), critic=(128, 128, 128), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, clip_ratio=0.2, ppo_epochs=3, inference=False, batch_size=32, frame_stack=12, obs_dim=None):
         super().__init__()
         self.algo_name = "ppo"
         self.frame_stack = int(frame_stack)
@@ -30,6 +31,7 @@ class PPO(BaseRL):
         self.value_buf = torch.zeros(self.batch_size, dtype=torch.float32)
         self.reward_buf = torch.zeros(self.batch_size, dtype=torch.float32)
 
+    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         with torch.no_grad():
@@ -56,13 +58,15 @@ class PPO(BaseRL):
             self.value_buf[self.ptr] = self.critic(feat).squeeze(-1)
         return action.detach().cpu().numpy()
 
+    @profile
     def learn(self, reward):
         if self.inference: return 0.0
         self.reward_buf[self.ptr] = reward
         self.ptr += 1
         if self.ptr < self.batch_size: return 0.0
 
-        advantages, returns = compute_gae(self.reward_buf, self.value_buf.detach(), gamma=self.gamma)
+        last_val = self.value_buf[-1].item()
+        advantages, returns = compute_gae(self.reward_buf, self.value_buf.detach(), gamma=self.gamma, last_value=last_val)
         states, actions, old_log_probs = self.state_buf, self.action_buf, self.logprob_buf.detach()
 
         for _ in range(self.ppo_epochs):

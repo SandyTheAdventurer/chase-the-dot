@@ -4,7 +4,7 @@ from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
 
 class DDPG(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, entropy_coeff=0.01, batch_size=32, inference=False, frame_stack=4, obs_dim=None):
+    def __init__(self, actor=(128, 128, 128), critic=(128, 128, 128), lr=0.001, gamma=0.99, tau=0.005, entropy_coeff=0.01, batch_size=32, inference=False, frame_stack=12, obs_dim=None):
         super().__init__()
         self.algo_name = "ddpg"
         self.frame_stack = int(frame_stack)
@@ -17,6 +17,10 @@ class DDPG(BaseRL):
         self.target_critic = mlp(self.obs_dim + self.act_dim, critic, 1)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic.load_state_dict(self.critic.state_dict())
+        for p in self.target_actor.parameters():
+            p.requires_grad_(False)
+        for p in self.target_critic.parameters():
+            p.requires_grad_(False)
 
         self.gamma, self.tau, self.inference, self.batch_size = gamma, tau, inference, batch_size
         self.buffer = ReplayBuffer(maxlen=100000)

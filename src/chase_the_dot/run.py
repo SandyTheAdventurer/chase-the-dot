@@ -25,7 +25,7 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--entropy-coeff", type=float, default=0.01, help="Entropy coefficient (VPG)")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for off-policy updates (Default: 32)")
+    parser.add_argument("--batch-size", type=int, default=256, help="Batch size for off-policy updates (Default: 256)")
     parser.add_argument("--rollout-steps", type=int, default=256, help="Rollout length for on-policy algorithms (Default: 256)")
     parser.add_argument("--speed", type=int, default=None, help="Configure object speed (100-500)")
     parser.add_argument("--size", type=float, default=None, help="Configure object size (10-100)")
@@ -41,9 +41,10 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
                         help="Probability of sampling the hardest frontier vs random within expanded domain (default: 0.5)")
     parser.add_argument("--oob-penalty", type=float, default=1.0, help="Out-of-bounds base penalty per error flag (default: 1.0)")
     parser.add_argument("--eval", action="store_true", help="Run in evaluation/inference mode (deterministic, no exploration noise)")
-    parser.add_argument("--model-path", type=str, default=None, help="Path to checkpoint for evaluation (default: models/{algo}_latest.pt)")
-    parser.add_argument("--frame-stack", type=int, default=4, help="Number of consecutive observation frames to stack (default: 4)")
-    parser.add_argument("--action-scale", type=float, default=30.0, help="Residual action authority scale in pixels (default: 30.0)")
+    parser.add_argument("--model-path", type=str, default=None, help="Path to load a checkpoint from (for eval or resuming training)")
+    parser.add_argument("--save-path", type=str, default=None, help="Custom path to save the model (default: models/{algo}_latest.pt)")
+    parser.add_argument("--frame-stack", type=int, default=12, help="Number of consecutive observation frames to stack (default: 12)")
+    parser.add_argument("--action-scale", type=float, default=40.0, help="Residual action authority scale in pixels (default: 40.0)")
     parser.add_argument("--seed", type=int, default=42, help="Global random seed (default: 42)")
     args = parser.parse_args(args_list)
 
@@ -95,14 +96,16 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
         print(f"Initializing PID Policy (kp={policy.kpx}, ki={policy.kix}, kd={policy.kdx})")
     else:
         print(f"Initializing {args.algo.upper()} Policy (frame_stack={args.frame_stack}, obs_dim={policy.obs_dim})")
-        if args.eval:
+        if args.eval or args.model_path:
             model_path = args.model_path or os.path.join("models", f"{args.algo}_latest.pt")
             if os.path.exists(model_path):
-                print(f"Loading checkpoint for evaluation: {model_path}")
+                mode_str = "evaluation" if args.eval else "resuming training"
+                print(f"Loading checkpoint for {mode_str}: {model_path}")
                 policy.load(model_path)
-                policy.eval()
+                if args.eval:
+                    policy.eval()
             else:
-                print(f"Warning: Checkpoint '{model_path}' not found! Evaluating uninitialized policy.")
+                print(f"Warning: Checkpoint '{model_path}' not found! Using uninitialized policy.")
 
     action_label = "Evaluating" if args.eval else "Training"
     print(f"Starting tracking loop using {args.algo.upper()} ({action_label}). Press Ctrl+C to stop.")
@@ -114,8 +117,9 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
 
     def save_checkpoint():
         if not args.eval and hasattr(policy, "save") and step_idx > 0:
-            os.makedirs("models", exist_ok=True)
-            policy.save(os.path.join("models", f"{args.algo}_latest.pt"))
+            save_path = args.save_path or os.path.join("models", f"{args.algo}_latest.pt")
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            policy.save(save_path)
 
     pbar = None
     try:
@@ -123,8 +127,12 @@ def main(args_list: list = None, default_algo: str = "pid") -> None:
         pbar = tqdm(total=args.timesteps, desc=f"{action_label} {args.algo.upper()}", unit="step")
 
         while step_idx < args.timesteps:
-            action = policy(obs)
-            obs, reward, terminated, truncated, info = env.step(action)
+            if getattr(policy, 'is_direct', False):
+                cmd = policy(obs, env=env)
+                obs, reward, terminated, truncated, info = env.step_direct(cmd[0], cmd[1])
+            else:
+                action = policy(obs)
+                obs, reward, terminated, truncated, info = env.step(action)
             step_idx += 1
 
             dist, in_b = info["distance"], int(info["in_bounds"])

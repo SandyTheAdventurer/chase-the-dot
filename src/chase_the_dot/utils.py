@@ -1,5 +1,6 @@
 import random
 from collections import deque
+from line_profiler import profile
 import torch
 from torch import nn
 
@@ -73,10 +74,12 @@ class BaseRL(nn.Module):
                 )
         self.load_state_dict(state_dict)
 
-def compute_gae(rewards, values=None, gamma=0.99, gae_lambda=0.95):
+@profile
+def compute_gae(rewards, values=None, gamma=0.99, gae_lambda=0.95, last_value=0.0):
     """Compute Generalized Advantage Estimation (GAE) or discounted returns."""
     adv = torch.zeros_like(rewards)
-    gae = next_val = 0.0
+    gae = 0.0
+    next_val = last_value
     for i in reversed(range(len(rewards))):
         val = values[i] if values is not None else 0.0
         delta = rewards[i] + gamma * next_val - val
@@ -91,25 +94,54 @@ def compute_gae(rewards, values=None, gamma=0.99, gae_lambda=0.95):
 class ReplayBuffer:
     """Experience replay buffer for off-policy algorithms."""
     def __init__(self, maxlen=100000):
-        self.buf = deque(maxlen=maxlen)
-        self.cur = None
+        self.maxlen = maxlen
+        self.ptr = 0
+        self.size = 0
+        
+        self.obs = None
+        self.act = None
+        self.rew = None
+        self.next_obs = None
+        
+        self.cur_feat = None
+        self.cur_act = None
+        self.cur_rew = None
 
+    @profile
     def store_step(self, feat, action, inference=False):
-        if self.cur is not None and len(self.cur) == 3:
-            self.cur.append(feat)
-            self.buf.append(self.cur)
+        if self.cur_feat is not None and self.cur_rew is not None:
+            # Lazy initialize buffers on the first complete transition
+            if self.obs is None:
+                self.obs = torch.empty((self.maxlen, *self.cur_feat.shape), dtype=torch.float32)
+                self.act = torch.empty((self.maxlen, *self.cur_act.shape), dtype=torch.float32)
+                self.rew = torch.empty((self.maxlen, 1), dtype=torch.float32)
+                self.next_obs = torch.empty((self.maxlen, *feat.shape), dtype=torch.float32)
+
+            self.obs[self.ptr] = self.cur_feat
+            self.act[self.ptr] = self.cur_act
+            self.rew[self.ptr] = self.cur_rew
+            self.next_obs[self.ptr] = feat
+            
+            self.ptr = (self.ptr + 1) % self.maxlen
+            self.size = min(self.size + 1, self.maxlen)
+            
+            self.cur_rew = None
+
         if not inference:
-            self.cur = [feat, action.detach()]
+            self.cur_feat = feat
+            self.cur_act = action.detach()
 
     def store_reward(self, reward):
-        if self.cur is not None and len(self.cur) == 2:
-            self.cur.append(torch.tensor([reward], dtype=torch.float32))
+        if self.cur_feat is not None and self.cur_rew is None:
+            self.cur_rew = torch.tensor([reward], dtype=torch.float32)
 
+    @profile
     def sample(self, batch_size):
-        if len(self.buf) < batch_size:
+        if self.size < batch_size:
             return None
-        obs, act, rew, next_obs = zip(*random.sample(self.buf, batch_size))
-        return torch.stack(obs), torch.stack(act), torch.stack(rew), torch.stack(next_obs)
+        # Fast sampling using PyTorch integer indexing
+        idxs = torch.randint(0, self.size, size=(batch_size,))
+        return self.obs[idxs], self.act[idxs], self.rew[idxs], self.next_obs[idxs]
 
     def __len__(self):
-        return len(self.buf)
+        return self.size

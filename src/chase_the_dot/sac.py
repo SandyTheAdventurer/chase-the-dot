@@ -1,11 +1,12 @@
 import torch
+from line_profiler import profile
 from torch import nn
 import numpy as np
 from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
 
 class SAC(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, alpha=0.01, batch_size=32, sde=False, inference=False, frame_stack=4, obs_dim=None):
+    def __init__(self, actor=(128, 128, 128), critic=(128, 128, 128), lr=0.001, gamma=0.99, tau=0.005, alpha=0.01, batch_size=32, sde=False, inference=False, frame_stack=12, obs_dim=None):
         super().__init__()
         self.algo_name = "sac"
         self.frame_stack = int(frame_stack)
@@ -23,6 +24,10 @@ class SAC(BaseRL):
         self.target_critic2 = mlp(self.obs_dim + self.act_dim, critic, 1)
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
+        for p in self.target_critic1.parameters():
+            p.requires_grad_(False)
+        for p in self.target_critic2.parameters():
+            p.requires_grad_(False)
 
         self.gamma, self.tau, self.inference, self.batch_size = gamma, tau, inference, batch_size
         self.target_entropy = -2.0
@@ -40,6 +45,7 @@ class SAC(BaseRL):
         self.target_critic2_params = list(self.target_critic2.parameters())
         self.critic2_params = list(self.critic2.parameters())
 
+    @profile
     def sample(self, feat):
         if not self.sde:
             mu = self.actor(feat)
@@ -55,6 +61,7 @@ class SAC(BaseRL):
         log_probs = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
         return action, log_probs.sum(dim=-1, keepdim=True)
 
+    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         with torch.no_grad():
@@ -67,6 +74,7 @@ class SAC(BaseRL):
         self.buffer.store_step(feat, action, self.inference)
         return action.detach().cpu().numpy()
 
+    @profile
     def learn(self, reward):
         if self.inference: return 0.0
         self.buffer.store_reward(reward)

@@ -5,7 +5,7 @@ from chase_the_dot.env import normalize
 from chase_the_dot.utils import mlp, BaseRL, compute_gae
 
 class A2C(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32, frame_stack=4, obs_dim=None):
+    def __init__(self, actor=(128, 128, 128), critic=(128, 128, 128), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32, frame_stack=12, obs_dim=None):
         super().__init__()
         self.algo_name = "a2c"
         self.frame_stack = int(frame_stack)
@@ -23,9 +23,9 @@ class A2C(BaseRL):
 
     def _reset_buf(self):
         self.ptr = 0
-        self.logprob_buf = torch.zeros(self.batch_size, dtype=torch.float32)
-        self.entropy_buf = torch.zeros(self.batch_size, dtype=torch.float32)
-        self.value_buf = torch.zeros(self.batch_size, dtype=torch.float32)
+        self.logprobs = []
+        self.entropies = []
+        self.values = []
         self.reward_buf = torch.zeros(self.batch_size, dtype=torch.float32)
 
     def forward(self, X):
@@ -47,9 +47,9 @@ class A2C(BaseRL):
 
         value = self.critic(feat)
         log_prob = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
-        self.logprob_buf[self.ptr] = log_prob.sum(dim=-1)
-        self.entropy_buf[self.ptr] = dist.entropy().sum(dim=-1)
-        self.value_buf[self.ptr] = value.squeeze(-1)
+        self.logprobs.append(log_prob.sum(dim=-1))
+        self.entropies.append(dist.entropy().sum(dim=-1))
+        self.values.append(value.squeeze(-1))
         return action.detach().cpu().numpy()
 
     def learn(self, reward):
@@ -58,10 +58,14 @@ class A2C(BaseRL):
         self.ptr += 1
         if self.ptr < self.batch_size: return 0.0
 
-        advantages, returns = compute_gae(self.reward_buf, self.value_buf.detach(), gamma=self.gamma)
-        actor_loss = -(advantages * self.logprob_buf).mean()
-        critic_loss = nn.functional.mse_loss(self.value_buf, returns)
-        entropy = self.entropy_buf.mean()
+        logprobs = torch.stack(self.logprobs)
+        entropies = torch.stack(self.entropies)
+        values = torch.stack(self.values)
+        last_val = values[-1].detach().item()
+        advantages, returns = compute_gae(self.reward_buf, values.detach(), gamma=self.gamma, last_value=last_val)
+        actor_loss = -(advantages * logprobs).mean()
+        critic_loss = nn.functional.mse_loss(values, returns)
+        entropy = entropies.mean()
         loss = actor_loss + critic_loss - self.entropy_coeff * entropy
 
         self.optim.zero_grad()

@@ -5,7 +5,7 @@ from chase_the_dot.env import normalize
 from chase_the_dot.utils import mlp, BaseRL, compute_gae
 
 class VPG(BaseRL):
-    def __init__(self, actor=(64, 64, 64), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32, frame_stack=4, obs_dim=None):
+    def __init__(self, actor=(128, 128, 128), sde=False, lr=0.001, gamma=0.99, entropy_coeff=0.01, inference=False, batch_size=32, frame_stack=12, obs_dim=None):
         super().__init__()
         self.algo_name = "vpg"
         self.frame_stack = int(frame_stack)
@@ -22,8 +22,8 @@ class VPG(BaseRL):
 
     def _reset_buf(self):
         self.ptr = 0
-        self.logprob_buf = torch.zeros(self.batch_size, dtype=torch.float32)
-        self.entropy_buf = torch.zeros(self.batch_size, dtype=torch.float32)
+        self.logprobs = []
+        self.entropies = []
         self.reward_buf = torch.zeros(self.batch_size, dtype=torch.float32)
 
     def forward(self, X):
@@ -44,8 +44,8 @@ class VPG(BaseRL):
         action = torch.tanh(u)
 
         log_prob = dist.log_prob(u) - torch.log(1 - action.pow(2) + 1e-6)
-        self.logprob_buf[self.ptr] = log_prob.sum(dim=-1)
-        self.entropy_buf[self.ptr] = dist.entropy().sum(dim=-1)
+        self.logprobs.append(log_prob.sum(dim=-1))
+        self.entropies.append(dist.entropy().sum(dim=-1))
         return action.detach().cpu().numpy()
 
     def learn(self, reward):
@@ -54,9 +54,11 @@ class VPG(BaseRL):
         self.ptr += 1
         if self.ptr < self.batch_size: return 0.0
 
+        logprobs = torch.stack(self.logprobs)
+        entropies = torch.stack(self.entropies)
         returns = compute_gae(self.reward_buf, gamma=self.gamma, gae_lambda=1.0)
-        actor_loss = -(returns * self.logprob_buf).mean()
-        entropy = self.entropy_buf.mean()
+        actor_loss = -(returns * logprobs).mean()
+        entropy = entropies.mean()
         loss = actor_loss - self.entropy_coeff * entropy
 
         self.optim.zero_grad()

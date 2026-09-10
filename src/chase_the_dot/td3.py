@@ -1,10 +1,11 @@
 import torch
+from line_profiler import profile
 from torch import nn
 from chase_the_dot.utils import mlp, BaseRL, ReplayBuffer
 from chase_the_dot.env import normalize
 
 class TD3(BaseRL):
-    def __init__(self, actor=(64, 64, 64), critic=(64, 64, 64), lr=0.001, gamma=0.99, tau=0.005, noise_std=0.2, noise_lmt=0.5, policy_delay=2, batch_size=32, inference=False, frame_stack=4, obs_dim=None):
+    def __init__(self, actor=(128, 128, 128), critic=(128, 128, 128), lr=0.001, gamma=0.99, tau=0.005, noise_std=0.2, noise_lmt=0.5, policy_delay=2, batch_size=32, inference=False, frame_stack=12, obs_dim=None):
         super().__init__()
         self.algo_name = "td3"
         self.frame_stack = int(frame_stack)
@@ -20,6 +21,12 @@ class TD3(BaseRL):
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_critic1.load_state_dict(self.critic1.state_dict())
         self.target_critic2.load_state_dict(self.critic2.state_dict())
+        for p in self.target_actor.parameters():
+            p.requires_grad_(False)
+        for p in self.target_critic1.parameters():
+            p.requires_grad_(False)
+        for p in self.target_critic2.parameters():
+            p.requires_grad_(False)
 
         self.gamma, self.tau, self.noise_std, self.noise_lmt = gamma, tau, noise_std, noise_lmt
         self.inference, self.batch_size, self.policy_delay = inference, batch_size, policy_delay
@@ -41,6 +48,7 @@ class TD3(BaseRL):
         noise = torch.clamp(torch.normal(0, self.noise_std, size=actions.shape), -self.noise_lmt, self.noise_lmt)
         return torch.clamp(actions + noise, -1.0, 1.0)
 
+    @profile
     def forward(self, X):
         feat = torch.as_tensor(normalize(X), dtype=torch.float32)
         action = torch.tanh(self.actor(feat))
@@ -49,6 +57,7 @@ class TD3(BaseRL):
         self.buffer.store_step(feat, action, self.inference)
         return action.detach().cpu().numpy()
 
+    @profile
     def learn(self, reward):
         if self.inference: return 0.0
         self.buffer.store_reward(reward)

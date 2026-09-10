@@ -1,3 +1,4 @@
+from line_profiler import profile
 import numpy as np
 
 class PID:
@@ -6,33 +7,35 @@ class PID:
     - Leaky anti-windup integration with axis-wise zero-crossing reset
     - Exponentially smoothed derivative filter (eliminates quantization chatter)
     - Adaptive non-linear gain scheduling for high-curvature turns
-    - Dynamic normalization to [-1.0, 1.0] action scale
+    - Direct absolute position output for env.step_direct()
     """
-    def __init__(self, kp: float = None, ki: float = None, kd: float = None, action_scale: float = 50.0):
+    def __init__(self, kp: float = None, ki: float = None, kd: float = None, action_scale: float = 40.0):
         # Optimal gains for 1-frame latency discrete B-spline tracking
         self.kp = self.kpx = self.kpy = 0.40 if kp is None else float(kp)
         self.ki = self.kix = self.kiy = 0.02 if ki is None else float(ki)
         self.kd = self.kdx = self.kdy = 0.10 if kd is None else float(kd)
         self.action_scale = float(action_scale)
+        self.is_direct = True  # Flag for run.py to use step_direct
 
         self.integral = np.zeros(2, dtype=np.float32)
         self.prev_err = None
         self.d_smooth = np.zeros(2, dtype=np.float32)
 
-    def __call__(self, X):
-        return self.forward(X)
+    def __call__(self, X, env=None):
+        return self.forward(X, env)
 
-    def forward(self, X):
+    @profile
+    def forward(self, X, env=None):
         if X is None:
             return None
 
-        # Tracking error: seamlessly handles stacked frames, single normalized obs, or raw states.
-        # In normalized frames, err_x and err_y are scaled by 0.02 (1 / 50.0).
+        # Extract tracking error and target position from observation
+        # In normalized stacked frames, err is scaled by (1 / action_scale)
         if len(X) > 8:
-            err = np.array([float(X[-6]) * 50.0, float(X[-5]) * 50.0], dtype=np.float32)
+            err = np.array([float(X[-6]) * self.action_scale, float(X[-5]) * self.action_scale], dtype=np.float32)
         elif len(X) == 8:
             if abs(float(X[0])) <= 2.0 and abs(float(X[1])) <= 2.0:
-                err = np.array([float(X[2]) * 50.0, float(X[3]) * 50.0], dtype=np.float32)
+                err = np.array([float(X[2]) * self.action_scale, float(X[3]) * self.action_scale], dtype=np.float32)
             else:
                 err = np.array([float(X[2]), float(X[3])], dtype=np.float32)
         else:
@@ -68,10 +71,20 @@ class PID:
         d_term = self.kd * self.d_smooth
         self.prev_err = err
 
-        # 4. Total corrective control in pixel space
+        # 4. PID correction in pixel space
         u_pixel = p_term + i_term + d_term
 
-        # 5. Map to [-1.0, 1.0] normalized action space for env.step()
+        # 5. Compute absolute position command:
+        # target position + geometric center offset + velocity feedforward + PID correction
+        if env is not None and env._latest is not None:
+            gx, gy = float(env._latest[0]), float(env._latest[1])
+            target_ox = 3.0 + 0.33 * (env.current_size - 10.0)
+            target_oy = 1.5 + 0.33 * (env.current_size - 10.0)
+            cmd_x = int(round(gx + target_ox + env.v_smooth_x + 0.5 * env.a_smooth_x + u_pixel[0]))
+            cmd_y = int(round(gy + target_oy + env.v_smooth_y + 0.5 * env.a_smooth_y + u_pixel[1]))
+            return cmd_x, cmd_y
+
+        # Fallback: return normalized action for backward compatibility
         action = np.clip(u_pixel / self.action_scale, -1.0, 1.0)
         return action
 
