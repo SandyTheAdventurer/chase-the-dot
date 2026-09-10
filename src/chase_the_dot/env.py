@@ -165,13 +165,7 @@ class ChaseTheDotEnv(gym.Env):
         num_flags = int(self.error_x) + int(self.error_y)
         in_bounds = (num_flags == 0)
 
-        if in_bounds:
-            target_radius = max(5.0, self.current_size * 0.5)
-            norm_dist = dist / target_radius
-            centering_bonus = math.exp(-2.0 * norm_dist * norm_dist)
-            reward = 1.0 + centering_bonus
-        else:
-            reward = -self.oob_penalty * num_flags - (dist * 0.04)
+        reward = 1.0 if in_bounds else 0.0
 
         info = {"distance": dist, "in_bounds": in_bounds, "error_x": self.error_x, "error_y": self.error_y, "state": s}
         return self.normalize(s), reward, info
